@@ -20,4 +20,4 @@ HTTP_REFERER = "https://your-site.com"
 X_TITLE = "AI Gateway"
 
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["*/5 * * * *", "0 3 * * *"]

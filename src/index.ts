@@ -4,12 +4,17 @@ import type { Env, Variables, ChatRequest, ChatResponse } from "./types.js";
 import { verifyAuth } from "./auth.js";
 import { callProvider } from "./providers.js";
 import { checkSync, check } from "./safety.js";
+import dashboard from "./dashboard.js";
+import { runHealthChecks } from "./registry.js";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-app.use("*", cors({ origin: "*", allowHeaders: ["Authorization", "Content-Type", "X-Feature"], allowMethods: ["POST", "GET", "OPTIONS"] }));
+app.use("*", cors({ origin: "*", allowHeaders: ["Authorization", "Content-Type", "X-Feature"], allowMethods: ["POST", "GET", "DELETE", "OPTIONS"] }));
 
 app.get("/health", (c) => c.json({ status: "ok", service: "ai-gateway" }));
+
+// Control-plane dashboard + registry API (served at "/" and "/api/control/*")
+app.route("/", dashboard);
 
 app.use("/v1/*", verifyAuth);
 
@@ -72,6 +77,7 @@ app.post("/v1/chat/completions", async (c) => {
 });
 
 async function writeLog(env: Env, table: string, data: Record<string, unknown>): Promise<void> {
+  if (table !== "cost_ledger" && table !== "safety_log") return; // allowlist — never interpolate arbitrary table names
   try {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
     const keys = ["id", ...Object.keys(data)];
@@ -82,9 +88,13 @@ async function writeLog(env: Env, table: string, data: Record<string, unknown>):
 
 export default {
   fetch: app.fetch,
-  async scheduled(_: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(
-      env.DB.prepare("DELETE FROM safety_log WHERE created_at < ?").bind(Date.now() - 30 * 864e5).run().catch(() => {})
-    );
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // Health sweep on every tick (5-min cron); TTL purges nightly (3am cron).
+    ctx.waitUntil(runHealthChecks(env).catch(() => {}));
+    if (controller.cron === "0 3 * * *") {
+      ctx.waitUntil(env.DB.prepare("DELETE FROM safety_log WHERE created_at < ?").bind(Date.now() - 30 * 864e5).run().catch(() => {}));
+      ctx.waitUntil(env.DB.prepare("DELETE FROM health_checks WHERE checked_at < ?").bind(Date.now() - 7 * 864e5).run().catch(() => {}));
+      ctx.waitUntil(env.DB.prepare("DELETE FROM activity WHERE created_at < ?").bind(Date.now() - 30 * 864e5).run().catch(() => {}));
+    }
   },
 };

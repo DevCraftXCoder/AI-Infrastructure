@@ -15,6 +15,35 @@ export interface Variables {
   callerHash: string;
 }
 
+export type ServiceStatus = "healthy" | "degraded" | "down" | "unknown";
+
+export interface Service {
+  id: string;
+  org: string;
+  project: string;
+  region: string;
+  name: string;
+  kind: string;
+  url: string | null;
+  status: ServiceStatus;
+  latency_ms: number | null;
+  version: string | null;
+  last_check: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ActivityRow {
+  id: string;
+  org: string;
+  project: string | null;
+  service_id: string | null;
+  kind: string;
+  message: string;
+  detail: string | null;
+  created_at: number;
+}
+
 export interface ContentPart {
   type: string;
   text: string;
