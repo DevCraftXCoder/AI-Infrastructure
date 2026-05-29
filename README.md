@@ -27,13 +27,3 @@ OpenAI-compatible LLM gateway and service health control plane on Cloudflare Wor
 ### Control Plane
 
 Dashboard served at `/` with a service health registry organized by org → project → region. The 5-minute cron sweeps all registered service endpoints and updates D1 health status in real time.
-
-## Usage
-
-```bash
-curl https://your-worker.workers.dev/v1/chat/completions \
-  -H "Authorization: Bearer $GATEWAY_KEY" \
-  -H "X-Feature: my-app" \
-  -H "Content-Type: application/json" \
-  -d '{ "model": "anthropic/claude-sonnet-4-6", "messages": [{ "role": "user", "content": "Hello" }] }'
-```
