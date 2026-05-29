@@ -41,7 +41,7 @@ wrangler secret put PERSPECTIVE_API_KEY # optional — Google Perspective API
 
 **5. Deploy**
 ```bash
-npm install && npm run deploy
+pnpm install && pnpm deploy
 ```
 
 ## Usage

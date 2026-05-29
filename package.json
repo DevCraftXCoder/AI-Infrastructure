@@ -1,6 +1,8 @@
 {
   "name": "ai-infrastructure",
   "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
