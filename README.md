@@ -32,7 +32,7 @@ wrangler secret put PERSPECTIVE_API_KEY  # optional
 
 **5. Deploy**
 ```bash
-npm install && npm run deploy
+pnpm install && pnpm run deploy
 ```
 
 ## Usage
