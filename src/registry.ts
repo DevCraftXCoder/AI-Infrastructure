@@ -171,8 +171,25 @@ async function pingOne(env: Env, svc: Service): Promise<void> {
   if (next !== svc.status) {
     await logActivity(env, {
       org: svc.org, project: svc.project, service_id: svc.id, kind: "status_change",
-      message: `${svc.name} ${svc.status} -> ${next}`, detail: JSON.stringify({ from: svc.status, to: next }),
+      message: `${svc.name} ${svc.status} → ${next}`, detail: JSON.stringify({ from: svc.status, to: next }),
     });
+    // Discord alert: only fire on transitions INTO down or degraded (not out of them)
+    if ((next === "down" || next === "degraded") && env.DISCORD_WEBHOOK_URL) {
+      const emoji = next === "down" ? "🔴" : "🟡";
+      fetch(env.DISCORD_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          embeds: [{
+            title: `${emoji} ${svc.name} is ${next}`,
+            description: `**${svc.org} / ${svc.project}** — ${svc.region}\nPrevious: **${svc.status}** → Now: **${next}**${ok ? `\nLatency: ${latency}ms  Status code: ${statusCode}` : "\nFailed to connect"}`,
+            color: next === "down" ? 0xe94560 : 0xd29922,
+            timestamp: new Date(now).toISOString(),
+          }],
+        }),
+        signal: AbortSignal.timeout(4000),
+      }).catch(() => {});
+    }
   }
 
   await env.DB.batch([
@@ -181,6 +198,41 @@ async function pingOne(env: Env, svc: Service): Promise<void> {
     env.DB.prepare("INSERT INTO health_checks (id, service_id, status, latency_ms, status_code, checked_at) VALUES (?,?,?,?,?,?)")
       .bind("hc_" + uid(), svc.id, next, ok ? latency : null, statusCode, now),
   ]);
+}
+
+/** Compute uptime % from last N health_checks rows (0-100). */
+export async function uptimePercent(env: Env, serviceId: string, windowSize = 100): Promise<number> {
+  const r = await env.DB.prepare(
+    "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) as up FROM (SELECT status FROM health_checks WHERE service_id = ? ORDER BY checked_at DESC LIMIT ?)"
+  ).bind(serviceId, windowSize).first<{ total: number; up: number }>();
+  if (!r || r.total === 0) return 100;
+  return Math.round((r.up / r.total) * 100);
+}
+
+/** Manually set status for services the cron can't reach (local/no-url). */
+export async function updateServiceStatus(env: Env, id: string, status: ServiceStatus): Promise<Service | null> {
+  const svc = await getService(env, id);
+  if (!svc) return null;
+  const now = Date.now();
+  await env.DB.prepare("UPDATE services SET status = ?, last_check = ?, updated_at = ? WHERE id = ?").bind(status, now, now, id).run();
+  if (status !== svc.status) {
+    await logActivity(env, {
+      org: svc.org, project: svc.project, service_id: id, kind: "status_change",
+      message: `${svc.name} manually set ${svc.status} → ${status}`, detail: JSON.stringify({ from: svc.status, to: status, manual: true }),
+    });
+  }
+  return getService(env, id);
+}
+
+/** Ingest an external event (deploy, config change) into the activity feed. Bearer-gated. */
+export async function ingestEvent(env: Env, input: { org: string; project?: string | null; service?: string | null; kind: string; message: string; detail?: string | null }): Promise<void> {
+  let serviceId: string | null = null;
+  if (input.service && input.org && input.project) {
+    const r = await env.DB.prepare("SELECT id FROM services WHERE org = ? AND project = ? AND name = ?")
+      .bind(input.org, input.project, input.service).first<{ id: string }>();
+    if (r) { serviceId = r.id; }
+  }
+  await logActivity(env, { org: input.org, project: input.project ?? null, service_id: serviceId, kind: input.kind, message: input.message, detail: input.detail ?? null });
 }
 
 /** Pings every service with a public health URL. Returns how many were checked. */

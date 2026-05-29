@@ -4,6 +4,7 @@ export interface Env {
   GATEWAY_KEY: string;
   OPENROUTER_API_KEY: string;
   PERSPECTIVE_API_KEY?: string;
+  DISCORD_WEBHOOK_URL?: string;
   FALLBACK_MODEL: string;
   OPENROUTER_BASE_URL: string;
   HTTP_REFERER: string;

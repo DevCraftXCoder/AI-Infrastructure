@@ -4,7 +4,7 @@ import { verifyAuth } from "./auth.js";
 import {
   listOrgs, listProjects, listRegions, listServices, summarize,
   listActivity, getService, recentChecks, upsertService, deleteService,
-  runHealthChecks, logActivity, type Filter,
+  runHealthChecks, logActivity, updateServiceStatus, uptimePercent, ingestEvent, type Filter,
 } from "./registry.js";
 
 const ALL = "__all__";
@@ -73,13 +73,6 @@ dash.get("/api/control/activity", async (c) => {
   } catch { return c.json({ error: "internal_error" }, 500); }
 });
 
-dash.get("/api/control/services/:id", async (c) => {
-  try {
-    const svc = await getService(c.env, c.req.param("id"));
-    if (!svc) return c.json({ error: "not_found" }, 404);
-    return c.json({ service: svc, checks: await recentChecks(c.env, svc.id) });
-  } catch { return c.json({ error: "internal_error" }, 500); }
-});
 
 dash.get("/api/control/export", async (c) => {
   try {
@@ -107,10 +100,25 @@ dash.get("/api/control/docs", (c) => c.json({
     { method: "GET", path: "/api/control/services/:id", auth: false, desc: "Service detail + recent health-check history." },
     { method: "GET", path: "/api/control/export?format=csv|json", auth: false, desc: "Export the filtered service set." },
     { method: "POST", path: "/api/control/services", auth: true, body: "{org, project, region?, name, kind?, url?, version?, status?}", desc: "Register or update a service." },
+    { method: "PATCH", path: "/api/control/services/:id/status", auth: true, body: "{status: healthy|degraded|down|unknown}", desc: "Manually set service status (for local services the cron cannot reach)." },
     { method: "DELETE", path: "/api/control/services/:id", auth: true, desc: "Remove a service." },
+    { method: "POST", path: "/api/control/activity", auth: true, body: "{org, project?, service?, kind?, message, detail?}", desc: "Ingest an external event (deploy, config change) into the activity feed." },
     { method: "POST", path: "/api/control/health-check", auth: true, desc: "Trigger an immediate health sweep of all public endpoints." },
   ],
 }));
+
+// ---- improvement 2: service detail with uptime % -----------------------
+
+// Override the plain service detail route to include uptime.
+dash.get("/api/control/services/:id", async (c) => {
+  try {
+    const id = c.req.param("id") ?? "";
+    const svc = await getService(c.env, id);
+    if (!svc) return c.json({ error: "not_found" }, 404);
+    const [checks, uptime] = await Promise.all([recentChecks(c.env, id), uptimePercent(c.env, id)]);
+    return c.json({ service: svc, checks, uptime });
+  } catch { return c.json({ error: "internal_error" }, 500); }
+});
 
 // ---- write APIs (Bearer GATEWAY_KEY) ----------------------------------
 
@@ -132,6 +140,30 @@ dash.post("/api/control/services", verifyAuth, async (c) => {
 dash.delete("/api/control/services/:id", verifyAuth, async (c) => {
   try { return (await deleteService(c.env, c.req.param("id") ?? "")) ? c.json({ ok: true }) : c.json({ error: "not_found" }, 404); }
   catch { return c.json({ error: "internal_error" }, 500); }
+});
+
+// improvement 2: manual status override (for local services cron can't reach)
+dash.patch("/api/control/services/:id/status", verifyAuth, async (c) => {
+  let body: { status?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: "invalid_json" }, 400); }
+  const allowed = new Set(["healthy", "degraded", "down", "unknown"]);
+  if (!body.status || !allowed.has(body.status)) return c.json({ error: "status must be healthy|degraded|down|unknown" }, 400);
+  try {
+    const svc = await updateServiceStatus(c.env, c.req.param("id") ?? "", body.status as "healthy" | "degraded" | "down" | "unknown");
+    if (!svc) return c.json({ error: "not_found" }, 404);
+    return c.json({ service: svc });
+  } catch { return c.json({ error: "internal_error" }, 500); }
+});
+
+// improvement 5: deploy / external event ingest for CI hooks
+dash.post("/api/control/activity", verifyAuth, async (c) => {
+  let body: { org?: string; project?: string; service?: string; kind?: string; message?: string; detail?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: "invalid_json" }, 400); }
+  if (!body.org || !body.message) return c.json({ error: "org_and_message_required" }, 400);
+  try {
+    await ingestEvent(c.env, { org: body.org, project: body.project ?? null, service: body.service ?? null, kind: body.kind ?? "deploy", message: body.message, detail: body.detail ?? null });
+    return c.json({ ok: true });
+  } catch { return c.json({ error: "internal_error" }, 500); }
 });
 
 dash.post("/api/control/health-check", verifyAuth, async (c) => {
@@ -229,6 +261,16 @@ const PAGE = `<!doctype html>
   .kv .k{color:var(--muted)}
   .fresh{font-size:12px;color:var(--muted)}
   .row{display:flex;align-items:center;gap:8px}
+  /* improvement 1: incidents panel */
+  .incidents{display:none;background:rgba(233,69,96,.08);border:1px solid rgba(233,69,96,.35);border-radius:var(--r);padding:14px 18px;margin:14px 0}
+  .incidents.visible{display:block}
+  .incidents h3{font-family:'Syne';font-size:14px;color:var(--accent);margin:0 0 10px}
+  .incidents ul{margin:0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:6px}
+  .incidents li{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid rgba(233,69,96,.3);display:flex;align-items:center;gap:6px;cursor:pointer}
+  .incidents li:hover{background:rgba(233,69,96,.12)}
+  /* improvement 2: badge as clickable status toggler (auth-gated, shows only when key set) */
+  .badge.clickable{cursor:pointer;border:1px solid transparent}
+  .badge.clickable:hover{filter:brightness(1.2);border-color:currentColor}
   @media (max-width:640px){ .region-card{position:static;margin-top:14px;display:inline-block;text-align:left} .header h1{font-size:21px} }
   @media (prefers-reduced-motion: reduce){ .drawer,.scrim{transition:none} }
 </style>
@@ -269,6 +311,7 @@ const PAGE = `<!doctype html>
   </div>
 
   <div class="summary" id="summary"></div>
+  <div class="incidents" id="incidents"><h3>⚠ Active Incidents</h3><ul id="incidentList"></ul></div>
   <div id="body"></div>
 
   <div class="scrim" id="scrim"></div>
@@ -280,6 +323,9 @@ const PAGE = `<!doctype html>
   var st={org:"",project:ALL,region:ALL,status:ALL,q:"",view:"comfortable",services:[],summary:{},lastLoad:0};
   var $=function(id){return document.getElementById(id)};
   var api=function(p){return fetch(p).then(function(r){return r.json()})};
+  var gatewayKey=sessionStorage.getItem("gk")||"";
+  function authedPost(path,body){return fetch(path,{method:"POST",headers:{"Authorization":"Bearer "+gatewayKey,"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json()})}
+  function authedPatch(path,body){return fetch(path,{method:"PATCH",headers:{"Authorization":"Bearer "+gatewayKey,"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json()})}
 
   function qsInit(){
     var p=new URLSearchParams(location.search);
@@ -312,6 +358,21 @@ const PAGE = `<!doctype html>
     $("search").value=st.q;
   }
 
+  // improvement 2: cycle status for local services
+  var STATUS_CYCLE=["healthy","degraded","down","unknown"];
+  function cycleStatus(svc){
+    var next=STATUS_CYCLE[(STATUS_CYCLE.indexOf(svc.status)+1)%STATUS_CYCLE.length];
+    if(!confirm("Set "+svc.name+" → "+next+"?"))return;
+    authedPatch("/api/control/services/"+svc.id+"/status",{status:next}).then(function(d){
+      if(d.error){if(d.error==="unauthorized")promptKey();return}
+      load();
+    });
+  }
+  function promptKey(){
+    var k=prompt("Enter GATEWAY_KEY to make changes:");if(!k)return;
+    gatewayKey=k;sessionStorage.setItem("gk",k);
+  }
+
   function renderSummary(s){
     var box=$("summary");box.innerHTML="";
     var grade=s.score>=90?"A":s.score>=75?"B":s.score>=55?"C":s.score>=35?"D":"F";
@@ -333,6 +394,21 @@ const PAGE = `<!doctype html>
     });
   }
 
+  // improvement 1: render incidents panel
+  function renderIncidents(){
+    var inc=st.services.filter(function(s){return s.status==="down"||s.status==="degraded"});
+    var panel=$("incidents"),list=$("incidentList");
+    list.innerHTML="";
+    if(!inc.length){panel.classList.remove("visible");return}
+    panel.classList.add("visible");
+    inc.forEach(function(s){
+      var li=document.createElement("li");
+      var dot=document.createElement("span");dot.className="dot "+s.status;li.appendChild(dot);
+      li.appendChild(document.createTextNode(s.project+" / "+s.name));
+      li.onclick=function(){openService(s.id)};list.appendChild(li);
+    });
+  }
+
   function renderBody(){
     var b=$("body");b.innerHTML="";
     if(!st.services.length){
@@ -344,10 +420,12 @@ const PAGE = `<!doctype html>
     if(st.view==="ops"){renderOps(b);return}
     var g=document.createElement("div");g.className="grid"+(st.view==="compact"?" compact":"");
     st.services.forEach(function(s){
-      var c=document.createElement("div");c.className="panel card";c.onclick=function(){openService(s.id)};
+      var c=document.createElement("div");c.className="panel card";c.onclick=function(e){if(e.target.closest(".badge.clickable"))return;openService(s.id)};
       var top=document.createElement("div");top.className="top";
       var nm=document.createElement("div");nm.className="name";txt(nm,s.name);
-      var bd=document.createElement("span");bd.className="badge "+s.status;txt(bd,s.status);
+      // improvement 2: badge is clickable to manually override status (when gateway key set)
+      var bd=document.createElement("span");bd.className="badge "+s.status+(gatewayKey?" clickable":"");txt(bd,s.status);
+      if(gatewayKey){bd.title="Click to cycle status";bd.onclick=function(e){e.stopPropagation();cycleStatus(s)}}
       top.appendChild(nm);top.appendChild(bd);
       var meta=document.createElement("div");meta.className="meta";
       meta.appendChild(span(s.project+" · "+s.kind));
@@ -394,7 +472,7 @@ const PAGE = `<!doctype html>
       fillSelects(d);
       txt($("title"),d.filters.org+(d.filters.project!==ALL?" / "+d.filters.project:""));
       txt($("regionVal"),d.filters.region===ALL?"All Regions":d.filters.region);
-      renderSummary(d.summary);renderBody();updateFresh();qsPush();
+      renderSummary(d.summary);renderIncidents();renderBody();updateFresh();qsPush();
     });
   }
   function updateFresh(){txt($("fresh"),"updated "+ago(st.lastLoad))}
@@ -416,6 +494,8 @@ const PAGE = `<!doctype html>
         checks.forEach(function(c){var bar=document.createElement("span");bar.style.height=Math.max(2,Math.round((c.latency_ms||0)/max*42))+"px";if(c.status!=="healthy")bar.style.background="var(--"+c.status+")";sp.appendChild(bar)});
         db.appendChild(sp);
       }
+      // improvement 3: uptime %
+      var upt=document.createElement("div");upt.className="kv";var uk=document.createElement("span");uk.className="k";txt(uk,"Uptime (last 100)");var uv=document.createElement("span");uv.className="mono";txt(uv,typeof d.uptime==="number"?d.uptime+"%":"—");upt.appendChild(uk);upt.appendChild(uv);db.appendChild(upt);
       [["Project",s.project],["Region",s.region],["Kind",s.kind],["Version",s.version||"—"],["Latency",s.latency_ms!=null?s.latency_ms+"ms":"—"],["Last check",ago(s.last_check)],["URL",s.url||"— (local / no endpoint)"]].forEach(function(kv){
         var row=document.createElement("div");row.className="kv";var k=document.createElement("span");k.className="k";txt(k,kv[0]);var v=document.createElement("span");v.className="mono";txt(v,kv[1]);row.appendChild(k);row.appendChild(v);db.appendChild(row);
       });
