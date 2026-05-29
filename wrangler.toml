@@ -1,0 +1,23 @@
+name = "ai-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ai-gateway-db"
+database_id = "YOUR_D1_DATABASE_ID"
+
+[[unsafe.bindings]]
+name = "GATEWAY_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1"
+simple = { limit = 60, period = 60 }
+
+[vars]
+FALLBACK_MODEL = "anthropic/claude-haiku-4.5"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+HTTP_REFERER = "https://your-site.com"
+X_TITLE = "AI Gateway"
+
+[triggers]
+crons = ["0 3 * * *"]
