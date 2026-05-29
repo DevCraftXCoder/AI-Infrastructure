@@ -11,10 +11,10 @@ OpenAI-compatible LLM gateway and service health control plane on Cloudflare Wor
 | Database | Cloudflare D1 (SQLite) | Cost ledger, safety log, service registry |
 | Rate Limiting | Workers Rate Limiting API | 60 req/min per caller (cross-isolate, durable) |
 | Primary Provider | OpenRouter | Routes to any model via OpenAI-compatible API |
-| Fallback Model | Claude Haiku 4.5 | Automatic failover when primary provider fails |
+| Fallback Model | Haiku (via OpenRouter) | Automatic failover when primary provider fails |
 | Safety — Input | Sync blocklist | Blocks before forwarding; logs to D1 safety_log |
 | Safety — Output | Perspective API | Async soft-flag on response content (non-blocking) |
-| Prompt Cache | Anthropic cache breakpoints | Auto-injects `cache_control: ephemeral` on system messages >4 KB |
+| Prompt Cache | Cache breakpoints | Auto-injects `cache_control: ephemeral` on system messages >4 KB |
 | Cron | 2 triggers | Every 5 min: service health sweeps · 3 AM UTC: TTL purges |
 | Telemetry | D1 cost_ledger | Tracks model, tokens, latency, cache hit/miss, fallback flag per request |
 
