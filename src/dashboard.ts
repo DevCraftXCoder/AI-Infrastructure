@@ -20,6 +20,89 @@ function readFilter(c: { req: { query: (k: string) => string | undefined } }): F
   };
 }
 
+// ---- stats API (P1: real backend stats from cost_ledger) ---------------
+
+interface StatRow { feature: string; total: number; errors: number; avg_latency: number; p95_latency: number; cache_hits: number; input_tokens: number; output_tokens: number; fallbacks: number }
+
+dash.get("/api/control/stats", async (c) => {
+  try {
+    const window = parseInt(c.req.query("window") || "86400000", 10); // default 24h in ms
+    const since = Date.now() - window;
+    const org = c.req.query("org") || undefined;
+
+    // Total request counts, error rates, latency, cache hits, token usage per feature
+    const rows = await c.env.DB.prepare(`
+      SELECT
+        feature,
+        COUNT(*) as total,
+        SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as errors,
+        AVG(latency_ms) as avg_latency,
+        SUM(CASE WHEN cache_status = 'hit' THEN 1 ELSE 0 END) as cache_hits,
+        SUM(COALESCE(input_tokens, 0)) as input_tokens,
+        SUM(COALESCE(output_tokens, 0)) as output_tokens,
+        SUM(was_fallback) as fallbacks
+      FROM cost_ledger
+      WHERE created_at >= ?
+      GROUP BY feature
+      ORDER BY total DESC
+      LIMIT 100
+    `).bind(since).all<StatRow>();
+
+    // p95 latency per feature (SQLite: use percentile approx via sub-select ordering)
+    const p95Rows = await c.env.DB.prepare(`
+      SELECT feature, latency_ms as p95_latency FROM (
+        SELECT feature, latency_ms,
+          ROW_NUMBER() OVER (PARTITION BY feature ORDER BY latency_ms) as rn,
+          COUNT(*) OVER (PARTITION BY feature) as cnt
+        FROM cost_ledger WHERE created_at >= ?
+      ) WHERE rn >= CAST(cnt * 0.95 AS INTEGER)
+      GROUP BY feature
+    `).bind(since).all<{ feature: string; p95_latency: number }>();
+
+    const p95Map: Record<string, number> = {};
+    for (const r of p95Rows.results ?? []) p95Map[r.feature] = r.p95_latency;
+
+    // Aggregate totals
+    const totals = await c.env.DB.prepare(`
+      SELECT
+        COUNT(*) as total_requests,
+        SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as total_errors,
+        AVG(latency_ms) as avg_latency_ms,
+        SUM(CASE WHEN cache_status = 'hit' THEN 1 ELSE 0 END) as cache_hit_count,
+        SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
+        SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
+        SUM(was_fallback) as total_fallbacks,
+        COUNT(DISTINCT feature) as active_features
+      FROM cost_ledger WHERE created_at >= ?
+    `).bind(since).first<{
+      total_requests: number; total_errors: number; avg_latency_ms: number;
+      cache_hit_count: number; total_input_tokens: number; total_output_tokens: number;
+      total_fallbacks: number; active_features: number;
+    }>();
+
+    const features = (rows.results ?? []).map(r => ({
+      ...r,
+      p95_latency: p95Map[r.feature] ?? null,
+      error_rate: r.total > 0 ? Math.round((r.errors / r.total) * 100) : 0,
+      cache_hit_rate: r.total > 0 ? Math.round((r.cache_hits / r.total) * 100) : 0,
+      fallback_rate: r.total > 0 ? Math.round((r.fallbacks / r.total) * 100) : 0,
+    }));
+
+    const t = totals ?? { total_requests: 0, total_errors: 0, avg_latency_ms: 0, cache_hit_count: 0, total_input_tokens: 0, total_output_tokens: 0, total_fallbacks: 0, active_features: 0 };
+    return c.json({
+      window_ms: window,
+      since,
+      totals: {
+        ...t,
+        error_rate: t.total_requests > 0 ? Math.round((t.total_errors / t.total_requests) * 100) : 0,
+        cache_hit_rate: t.total_requests > 0 ? Math.round((t.cache_hit_count / t.total_requests) * 100) : 0,
+        fallback_rate: t.total_requests > 0 ? Math.round((t.total_fallbacks / t.total_requests) * 100) : 0,
+      },
+      by_feature: features,
+    });
+  } catch { return c.json({ error: "internal_error" }, 500); }
+});
+
 // ---- read APIs (public) ------------------------------------------------
 
 dash.get("/api/control/orgs", async (c) => {
@@ -99,6 +182,7 @@ dash.get("/api/control/docs", (c) => c.json({
     { method: "GET", path: "/api/control/activity?org=&project=&limit=", auth: false, desc: "Recent activity / What Changed feed." },
     { method: "GET", path: "/api/control/services/:id", auth: false, desc: "Service detail + recent health-check history." },
     { method: "GET", path: "/api/control/export?format=csv|json", auth: false, desc: "Export the filtered service set." },
+    { method: "GET", path: "/api/control/stats?window=86400000&org=", auth: false, desc: "Gateway request counts, error rates, latency (avg + p95), cache hit rate, token usage, fallback rate — aggregated from cost_ledger." },
     { method: "POST", path: "/api/control/services", auth: true, body: "{org, project, region?, name, kind?, url?, version?, status?}", desc: "Register or update a service." },
     { method: "PATCH", path: "/api/control/services/:id/status", auth: true, body: "{status: healthy|degraded|down|unknown}", desc: "Manually set service status (for local services the cron cannot reach)." },
     { method: "DELETE", path: "/api/control/services/:id", auth: true, desc: "Remove a service." },
@@ -271,6 +355,7 @@ const PAGE = `<!doctype html>
   /* improvement 2: badge as clickable status toggler (auth-gated, shows only when key set) */
   .badge.clickable{cursor:pointer;border:1px solid transparent}
   .badge.clickable:hover{filter:brightness(1.2);border-color:currentColor}
+  #featureTbody tr{cursor:default} #featureTbody tr:hover{background:var(--panel2)}
   @media (max-width:640px){ .region-card{position:static;margin-top:14px;display:inline-block;text-align:left} .header h1{font-size:21px} }
   @media (prefers-reduced-motion: reduce){ .drawer,.scrim{transition:none} }
 </style>
@@ -312,6 +397,25 @@ const PAGE = `<!doctype html>
 
   <div class="summary" id="summary"></div>
   <div class="incidents" id="incidents"><h3>⚠ Active Incidents</h3><ul id="incidentList"></ul></div>
+
+  <!-- P1: Gateway stats panel (live from cost_ledger) -->
+  <div class="panel" style="margin:14px 0;padding:16px 18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="font-family:'Syne';font-size:14px;margin:0;color:var(--muted);letter-spacing:.08em;text-transform:uppercase">LLM Gateway — Last 24h</h3>
+    </div>
+    <div class="summary" id="gwStats" style="margin:0 0 16px"></div>
+    <div style="overflow-x:auto">
+      <table class="ops">
+        <thead><tr>
+          <th>Feature</th><th>Requests</th><th>Error Rate</th><th>Avg Latency</th><th>Cache Hit</th><th>Input Tokens</th><th>Fallback</th>
+        </tr></thead>
+        <tbody id="featureTbody">
+          <tr><td colspan="7" style="color:var(--muted);padding:20px;text-align:center">Loading gateway stats…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <div id="body"></div>
 
   <div class="scrim" id="scrim"></div>
@@ -349,12 +453,17 @@ const PAGE = `<!doctype html>
   function ago(ms){if(!ms)return "never";var s=Math.floor((Date.now()-ms)/1000);if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago"}
 
   function fillSelects(d){
-    var os=$("orgSel");os.innerHTML="";d.orgs.forEach(function(o){os.appendChild(opt(o,o,d.filters.org))});
-    var ps=$("projSel");ps.innerHTML="";ps.appendChild(opt(ALL,"All Projects",d.filters.project));
-    d.projects.forEach(function(p){ps.appendChild(opt(p,p,d.filters.project))});
-    var rs=$("regionSel");rs.innerHTML="";rs.appendChild(opt(ALL,"All Regions",d.filters.region));
-    d.regions.forEach(function(r){rs.appendChild(opt(r,r,d.filters.region))});
-    $("statusSel").value=d.filters.status||ALL;
+    // P0 guard: treat undefined/null arrays as empty — prevents .forEach on undefined crash
+    var orgs=Array.isArray(d.orgs)?d.orgs:[];
+    var projects=Array.isArray(d.projects)?d.projects:[];
+    var regions=Array.isArray(d.regions)?d.regions:[];
+    var filters=d.filters||{};
+    var os=$("orgSel");os.innerHTML="";orgs.forEach(function(o){os.appendChild(opt(o,o,filters.org))});
+    var ps=$("projSel");ps.innerHTML="";ps.appendChild(opt(ALL,"All Projects",filters.project));
+    projects.forEach(function(p){ps.appendChild(opt(p,p,filters.project))});
+    var rs=$("regionSel");rs.innerHTML="";rs.appendChild(opt(ALL,"All Regions",filters.region));
+    regions.forEach(function(r){rs.appendChild(opt(r,r,filters.region))});
+    $("statusSel").value=filters.status||ALL;
     $("search").value=st.q;
   }
 
@@ -374,21 +483,24 @@ const PAGE = `<!doctype html>
   }
 
   function renderSummary(s){
+    // P0 guard: s may be undefined if API returned error or empty response
+    if(!s||typeof s!=="object"){s={score:0,total:0,healthy:0,degraded:0,down:0,unknown:0,freshest:null,stalest:null}}
     var box=$("summary");box.innerHTML="";
-    var grade=s.score>=90?"A":s.score>=75?"B":s.score>=55?"C":s.score>=35?"D":"F";
+    var score=s.score==null?0:s.score;
+    var grade=score>=90?"A":score>=75?"B":score>=55?"C":score>=35?"D":"F";
     var cells=[
-      {n:s.score+" "+grade,k:"Health Score",cls:"score"},
-      {n:s.total,k:"Services"},
-      {n:s.healthy,k:"Healthy",dot:"healthy"},
-      {n:s.degraded,k:"Degraded",dot:"degraded"},
-      {n:s.down,k:"Down",dot:"down"},
+      {n:score+" "+grade,k:"Health Score",cls:"score"},
+      {n:s.total==null?0:s.total,k:"Services"},
+      {n:s.healthy==null?0:s.healthy,k:"Healthy",dot:"healthy"},
+      {n:s.degraded==null?0:s.degraded,k:"Degraded",dot:"degraded"},
+      {n:s.down==null?0:s.down,k:"Down",dot:"down"},
       {n:ago(s.freshest),k:"Last Check"}
     ];
     cells.forEach(function(c){
       var el=document.createElement("div");el.className="panel stat"+(c.cls?" "+c.cls:"");
       var n=document.createElement("div");n.className="n";
       if(c.dot){var d=document.createElement("span");d.className="dot "+c.dot;n.appendChild(d)}
-      n.appendChild(document.createTextNode(c.n));
+      n.appendChild(document.createTextNode(String(c.n==null?"—":c.n)));
       var k=document.createElement("div");k.className="k";txt(k,c.k);
       el.appendChild(n);el.appendChild(k);box.appendChild(el);
     });
@@ -411,6 +523,7 @@ const PAGE = `<!doctype html>
 
   function renderBody(){
     var b=$("body");b.innerHTML="";
+    if(!Array.isArray(st.services))st.services=[];
     if(!st.services.length){
       var e=document.createElement("div");e.className="panel empty";
       e.appendChild(document.createTextNode("No services registered for the selected filter."));
@@ -466,16 +579,77 @@ const PAGE = `<!doctype html>
     p.set("project",st.project);p.set("region",st.region);p.set("status",st.status);
     if(st.q)p.set("q",st.q);
     return api("/api/control/overview?"+p.toString()).then(function(d){
-      if(d.error)return;
-      st.org=d.filters.org;st.project=d.filters.project;st.region=d.filters.region;st.status=d.filters.status;
-      st.services=d.services;st.summary=d.summary;st.lastLoad=Date.now();
+      if(!d||d.error)return;
+      // P0 guard: treat all response fields defensively
+      var filters=d.filters||{};
+      st.org=filters.org||st.org||"";
+      st.project=filters.project||ALL;
+      st.region=filters.region||ALL;
+      st.status=filters.status||ALL;
+      st.services=Array.isArray(d.services)?d.services:[];
+      st.summary=d.summary||{score:0,total:0,healthy:0,degraded:0,down:0,unknown:0,freshest:null,stalest:null};
+      st.lastLoad=Date.now();
       fillSelects(d);
-      txt($("title"),d.filters.org+(d.filters.project!==ALL?" / "+d.filters.project:""));
-      txt($("regionVal"),d.filters.region===ALL?"All Regions":d.filters.region);
-      renderSummary(d.summary);renderIncidents();renderBody();updateFresh();qsPush();
+      txt($("title"),(filters.org||"")+(filters.project&&filters.project!==ALL?" / "+filters.project:""));
+      txt($("regionVal"),filters.region===ALL||!filters.region?"All Regions":filters.region);
+      renderSummary(st.summary);renderIncidents();renderBody();updateFresh();qsPush();
+      // P1: load gateway stats in parallel (non-blocking — fail silently)
+      loadStats();
     });
   }
   function updateFresh(){txt($("fresh"),"updated "+ago(st.lastLoad))}
+
+  // P1: gateway stats from cost_ledger
+  function loadStats(){
+    var p=new URLSearchParams();p.set("window","86400000");
+    api("/api/control/stats?"+p.toString()).then(function(d){
+      if(!d||d.error)return;
+      renderStats(d);
+    }).catch(function(){});
+  }
+  function renderStats(d){
+    var box=$("gwStats");if(!box)return;
+    var t=d.totals||{};
+    var cells=[
+      {n:t.total_requests==null?0:t.total_requests,k:"Requests (24h)"},
+      {n:(t.error_rate==null?0:t.error_rate)+"%",k:"Error Rate"},
+      {n:t.avg_latency_ms==null?"—":Math.round(t.avg_latency_ms)+"ms",k:"Avg Latency"},
+      {n:(t.cache_hit_rate==null?0:t.cache_hit_rate)+"%",k:"Cache Hit Rate"},
+      {n:t.total_input_tokens==null?0:t.total_input_tokens.toLocaleString(),k:"Input Tokens"},
+      {n:t.total_output_tokens==null?0:t.total_output_tokens.toLocaleString(),k:"Output Tokens"},
+      {n:(t.fallback_rate==null?0:t.fallback_rate)+"%",k:"Fallback Rate"},
+      {n:t.active_features==null?0:t.active_features,k:"Active Features"}
+    ];
+    box.innerHTML="";
+    cells.forEach(function(c){
+      var el=document.createElement("div");el.className="panel stat";
+      var n=document.createElement("div");n.className="n";n.appendChild(document.createTextNode(String(c.n)));
+      var k=document.createElement("div");k.className="k";txt(k,c.k);
+      el.appendChild(n);el.appendChild(k);box.appendChild(el);
+    });
+    // P1: render by-feature table if data exists
+    var tbody=$("featureTbody");if(!tbody)return;
+    tbody.innerHTML="";
+    var features=Array.isArray(d.by_feature)?d.by_feature:[];
+    if(!features.length){
+      var tr=document.createElement("tr");var td=document.createElement("td");td.colSpan=7;td.style.color="var(--muted)";td.style.padding="20px";td.textContent="No gateway requests in this window";
+      tr.appendChild(td);tbody.appendChild(tr);return;
+    }
+    features.forEach(function(f){
+      var r=document.createElement("tr");
+      var cells2=[
+        f.feature,
+        f.total,
+        f.error_rate+"%",
+        f.avg_latency==null?"—":Math.round(f.avg_latency)+"ms",
+        f.cache_hit_rate+"%",
+        (f.input_tokens||0).toLocaleString(),
+        f.fallback_rate+"%"
+      ];
+      cells2.forEach(function(v){var td=document.createElement("td");td.textContent=String(v);r.appendChild(td)});
+      tbody.appendChild(r);
+    });
+  }
 
   // drawers
   function openDrawer(){$("drawer").classList.add("open");$("scrim").classList.add("open")}
@@ -483,7 +657,7 @@ const PAGE = `<!doctype html>
   function openService(id){
     openDrawer();var db=$("drawerBody");db.innerHTML="";var h=document.createElement("h2");txt(h,"Loading…");db.appendChild(h);
     api("/api/control/services/"+id).then(function(d){
-      if(d.error){txt(h,"Not found");return}
+      if(!d||d.error||!d.service){txt(h,"Not found");return}
       db.innerHTML="";var s=d.service;
       var t=document.createElement("h2");txt(t,s.name);db.appendChild(t);
       var bd=document.createElement("span");bd.className="badge "+s.status;txt(bd,s.status);bd.style.marginTop="8px";bd.style.display="inline-block";db.appendChild(bd);
@@ -533,10 +707,12 @@ const PAGE = `<!doctype html>
   $("statusSel").onchange=function(){st.status=this.value;load()};
   var sTimer;$("search").oninput=function(){var v=this.value;clearTimeout(sTimer);sTimer=setTimeout(function(){st.q=v.trim();load()},250)};
   $("reset").onclick=function(){st.project=ALL;st.region=ALL;st.status=ALL;st.q="";load()};
-  Array.prototype.forEach.call($("viewSeg").children,function(btn){btn.onclick=function(){
-    Array.prototype.forEach.call($("viewSeg").children,function(b){b.classList.remove("active")});
-    btn.classList.add("active");st.view=btn.getAttribute("data-v");renderBody();qsPush();
-  }});
+  // P0 guard: check element exists before accessing .children
+  var viewSegEl=$("viewSeg");
+  if(viewSegEl){Array.prototype.forEach.call(viewSegEl.children,function(btn){btn.onclick=function(){
+    Array.prototype.forEach.call(viewSegEl.children,function(b){b.classList.remove("active")});
+    btn.classList.add("active");st.view=btn.getAttribute("data-v")||"comfortable";renderBody();qsPush();
+  }});}
   $("refresh").onclick=function(){load()};
   $("exportBtn").onclick=function(){
     var p=new URLSearchParams();if(st.org)p.set("org",st.org);if(st.project!==ALL)p.set("project",st.project);if(st.region!==ALL)p.set("region",st.region);if(st.status!==ALL)p.set("status",st.status);if(st.q)p.set("q",st.q);p.set("format","csv");
@@ -547,8 +723,8 @@ const PAGE = `<!doctype html>
   $("drawerClose").onclick=closeDrawer;$("scrim").onclick=closeDrawer;
   document.addEventListener("keydown",function(e){if(e.key==="Escape")closeDrawer();if(e.key==="/"&&document.activeElement!==$("search")){e.preventDefault();$("search").focus()}});
 
-  // view seg initial active
-  Array.prototype.forEach.call($("viewSeg").children,function(b){b.classList.toggle("active",b.getAttribute("data-v")===st.view)});
+  // view seg initial active (P0 guard: reuse cached element)
+  if(viewSegEl){Array.prototype.forEach.call(viewSegEl.children,function(b){b.classList.toggle("active",b.getAttribute("data-v")===st.view)});}
 
   // auto-refresh
   setInterval(function(){updateFresh();if($("auto").checked)load()},30000);
