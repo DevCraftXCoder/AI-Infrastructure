@@ -3,6 +3,24 @@ import type { Env, Variables } from "./types.js";
 
 type Ctx = { Bindings: Env; Variables: Variables };
 
+/** Admin-only gate: accepts ONLY the master GATEWAY_KEY.
+ *  Unlike verifyAuth, this never falls through to per-service token lookup,
+ *  so read-scoped service tokens cannot reach session lifecycle endpoints. */
+export async function verifyAdminOnly(c: Context<Ctx>, next: Next): Promise<Response | void> {
+  const header = c.req.header("Authorization");
+  if (!header?.startsWith("Bearer ")) return c.json({ error: "unauthorized" }, 401);
+  const token = header.slice(7);
+  if (!c.env.GATEWAY_KEY) return c.json({ error: "unauthorized" }, 401);
+  const enc = new TextEncoder();
+  const [tokenHash, masterHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(token)),
+    crypto.subtle.digest("SHA-256", enc.encode(c.env.GATEWAY_KEY)),
+  ]);
+  if (!crypto.subtle.timingSafeEqual(tokenHash, masterHash)) return c.json({ error: "unauthorized" }, 401);
+  c.set("callerHash", toHex(tokenHash));
+  return next();
+}
+
 function toHex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }

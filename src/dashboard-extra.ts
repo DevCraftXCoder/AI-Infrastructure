@@ -5,7 +5,8 @@
  */
 import { Hono } from "hono";
 import type { Env, Variables } from "./types.js";
-import { verifyAuth } from "./auth.js";
+import { verifyAuth, verifyAdminOnly } from "./auth.js";
+import { sha256Hex, readSession, extend as extendSession, renew as renewSession, revokeAll } from "./session.js";
 
 const extra = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -137,37 +138,107 @@ extra.get("/api/control/access/session", async (c) => {
   }
 
   const now = Date.now();
-  // Valid key → fresh 8h session. No/invalid key → already expired.
-  const session_expires_at = isAdmin ? now + 8 * 3600 * 1000 : now - 1;
+
+  // Unauthenticated (no/invalid key) → no session. Expiry in the past so the
+  // UI shows "Expired" but distinguishes this from a real timed-out session.
+  if (!isAdmin) {
+    return c.json({
+      actor: "Frxncois",
+      auth_provider: "unauthenticated",
+      role,
+      mfa_status,
+      access_risk_score: 40,
+      session_state: "unauthenticated",
+      session_expires_at: now - 1,
+      idle_expires_at: now - 1,
+      idle_minutes: 0,
+      region: "auto",
+      identity: "Unknown | unauthenticated",
+    });
+  }
+
+  // Authenticated → real, persisted session. Read-only on GET so the 60s
+  // dashboard poll cannot keep the session alive by itself — idle fires after
+  // 30m of no explicit Extend actions. mint happens only via POST extend-session.
+  const callerHash = await sha256Hex(header.slice(7));
+  const sv = await readSession(c.env, callerHash, now);
+
+  // No session yet (first load, post-logout) — report unauthenticated shape
+  // so the UI prompts the user to click Extend/Renew to start one.
+  if (!sv) {
+    return c.json({
+      actor: "Frxncois",
+      auth_provider: "admin_auth_gateway",
+      role: "admin",
+      mfa_status: "missing",
+      access_risk_score: 90,
+      session_state: "no_session",
+      session_expires_at: now - 1,
+      idle_expires_at: now - 1,
+      idle_minutes: 0,
+      extend_count: 0,
+      region: "auto",
+      identity: "Frxncois | admin_gateway | _auth_gateway | Online",
+    });
+  }
 
   return c.json({
     actor: "Frxncois",
-    auth_provider: isAdmin ? "admin_auth_gateway" : "unauthenticated",
+    auth_provider: "admin_auth_gateway",
     role,
-    mfa_status,
-    access_risk_score: role === "admin" ? 90 : 40,
-    session_expires_at,
+    mfa_status: (sv.session_state === "expired" || sv.session_state === "idle") ? "missing" : mfa_status,
+    access_risk_score: 90,
+    session_id: sv.session_id,
+    session_state: sv.session_state,
+    session_expires_at: sv.session_expires_at,
+    idle_expires_at: sv.idle_expires_at,
+    idle_minutes: sv.idle_minutes,
+    extend_count: sv.extend_count,
     region: "auto",
-    identity: isAdmin
-      ? "Frxncois | admin_gateway | _auth_gateway | Online"
-      : "Unknown | unauthenticated",
+    identity: "Frxncois | admin_gateway | _auth_gateway | Online",
   });
 });
 
-extra.post("/api/control/access/extend-session", verifyAuth, async (c) => {
-  return c.json({ ok: true, session_expires_at: Date.now() + 8 * 3600 * 1000 });
+extra.post("/api/control/access/extend-session", verifyAdminOnly, async (c) => {
+  try {
+    const callerHash = c.get("callerHash");
+    const actor = "admin:" + callerHash.slice(0, 8);
+    const sv = await extendSession(c.env, callerHash, actor, Date.now());
+    return c.json({
+      ok: true,
+      session_id: sv.session_id,
+      session_state: sv.session_state,
+      session_expires_at: sv.session_expires_at,
+      idle_expires_at: sv.idle_expires_at,
+      idle_minutes: sv.idle_minutes,
+      extend_count: sv.extend_count,
+    });
+  } catch { return c.json({ ok: false, error: "internal_error" }, 500); }
 });
 
-extra.post("/api/control/access/renew-session", verifyAuth, async (c) => {
-  return c.json({
-    ok: true,
-    mfa_status: "verified",
-    session_expires_at: Date.now() + 8 * 3600 * 1000,
-  });
+extra.post("/api/control/access/renew-session", verifyAdminOnly, async (c) => {
+  try {
+    const callerHash = c.get("callerHash");
+    const actor = "admin:" + callerHash.slice(0, 8);
+    const sv = await renewSession(c.env, callerHash, actor, Date.now());
+    return c.json({
+      ok: true,
+      mfa_status: "verified",
+      session_id: sv.session_id,
+      session_state: sv.session_state,
+      session_expires_at: sv.session_expires_at,
+      idle_expires_at: sv.idle_expires_at,
+      idle_minutes: sv.idle_minutes,
+    });
+  } catch { return c.json({ ok: false, error: "internal_error" }, 500); }
 });
 
-extra.post("/api/control/access/logout", verifyAuth, async (c) => {
-  return c.json({ ok: true, message: "Session invalidated" });
+extra.post("/api/control/access/logout", verifyAdminOnly, async (c) => {
+  try {
+    const callerHash = c.get("callerHash");
+    await revokeAll(c.env, callerHash, "admin:" + callerHash.slice(0, 8), Date.now());
+    return c.json({ ok: true, message: "Session invalidated" });
+  } catch { return c.json({ ok: false, error: "internal_error" }, 500); }
 });
 
 // ── AUDIT TRAIL ────────────────────────────────────────────────────────────
