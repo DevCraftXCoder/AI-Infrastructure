@@ -150,7 +150,7 @@ export async function logActivity(env: Env, a: ActivityInput): Promise<void> {
 function classify(statusCode: number | null, latency: number, ok: boolean): ServiceStatus {
   if (!ok || statusCode == null) return "down";
   if (statusCode >= 500) return "down";
-  if (statusCode >= 400) return "degraded";
+  if (statusCode >= 400 && statusCode < 500) return "degraded"; // 4xx = misconfigured endpoint (degraded, not down — avoids mass Discord alerts on URL changes)
   if (latency > DEGRADED_MS) return "degraded";
   return "healthy";
 }

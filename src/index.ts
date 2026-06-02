@@ -76,13 +76,20 @@ app.post("/v1/chat/completions", async (c) => {
   return c.json(json);
 });
 
+// Hard-coded column schemas per table — prevents column-name injection via Object.keys()
+const SCHEMAS: Record<string, string[]> = {
+  cost_ledger: ["id", "feature", "model", "was_fallback", "input_tokens", "output_tokens", "cache_status", "latency_ms", "status_code", "created_at"],
+  safety_log:  ["id", "feature", "phase", "outcome", "reason", "excerpt", "created_at"],
+};
+
 async function writeLog(env: Env, table: string, data: Record<string, unknown>): Promise<void> {
-  if (table !== "cost_ledger" && table !== "safety_log") return; // allowlist — never interpolate arbitrary table names
+  const cols = SCHEMAS[table];
+  if (!cols) return; // unknown table — reject silently (also allowlists table names)
   try {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
-    const keys = ["id", ...Object.keys(data)];
-    const vals = [id, ...Object.values(data)];
-    await env.DB.prepare(`INSERT INTO ${table} (${keys.join(",")}) VALUES (${keys.map(() => "?").join(",")})`).bind(...vals).run();
+    const fullData: Record<string, unknown> = { id, ...data };
+    const vals = cols.map(k => fullData[k] ?? null);
+    await env.DB.prepare(`INSERT INTO ${table} (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).bind(...vals).run();
   } catch { /* never break the response path */ }
 }
 
@@ -95,6 +102,7 @@ export default {
       ctx.waitUntil(env.DB.prepare("DELETE FROM safety_log WHERE created_at < ?").bind(Date.now() - 30 * 864e5).run().catch(() => {}));
       ctx.waitUntil(env.DB.prepare("DELETE FROM health_checks WHERE checked_at < ?").bind(Date.now() - 7 * 864e5).run().catch(() => {}));
       ctx.waitUntil(env.DB.prepare("DELETE FROM activity WHERE created_at < ?").bind(Date.now() - 30 * 864e5).run().catch(() => {}));
+      ctx.waitUntil(env.DB.prepare("DELETE FROM cost_ledger WHERE created_at < ?").bind(Date.now() - 90 * 864e5).run().catch(() => {})); // 90-day retention
     }
   },
 };

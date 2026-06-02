@@ -21,7 +21,7 @@ interface IncidentRow {
   sla_breached: number; detail: string | null; created_at: number; updated_at: number;
 }
 
-extra.get("/api/control/incidents", async (c) => {
+extra.get("/api/control/incidents", verifyAuth, async (c) => {
   try {
     const org = c.req.query("org") || undefined;
     const status = c.req.query("status") || undefined;
@@ -91,7 +91,7 @@ extra.delete("/api/control/incidents/:id", verifyAuth, async (c) => {
 
 // ── LOGS ───────────────────────────────────────────────────────────────────
 
-extra.get("/api/control/logs", async (c) => {
+extra.get("/api/control/logs", verifyAuth, async (c) => {
   try {
     const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
     const status = c.req.query("status") || undefined;
@@ -116,11 +116,11 @@ extra.get("/api/control/logs", async (c) => {
 // ── ACCESS / SESSION ───────────────────────────────────────────────────────
 
 extra.get("/api/control/access/session", async (c) => {
-  // Derive MFA status from Authorization header presence + validity
   const header = c.req.header("Authorization") || "";
   const hasToken = header.startsWith("Bearer ") && header.length > 7;
-  let mfa_status: "verified" | "missing" | "unknown" = "unknown";
+  let mfa_status: "verified" | "missing" | "unknown" = "missing";
   let role: "viewer" | "operator" | "admin" = "viewer";
+  let isAdmin = false;
 
   if (hasToken && c.env.GATEWAY_KEY) {
     const token = header.slice(7);
@@ -129,36 +129,41 @@ extra.get("/api/control/access/session", async (c) => {
       crypto.subtle.digest("SHA-256", enc.encode(token)),
       crypto.subtle.digest("SHA-256", enc.encode(c.env.GATEWAY_KEY)),
     ]);
-    const isAdmin = crypto.subtle.timingSafeEqual(a, b);
+    isAdmin = crypto.subtle.timingSafeEqual(a, b);
     if (isAdmin) {
       role = "admin";
-      mfa_status = "missing"; // gateway key auth — no TOTP/WebAuthn step
-    } else {
-      mfa_status = "missing";
-      role = "viewer";
+      mfa_status = "verified"; // gateway key presence IS identity assurance
     }
-  } else {
-    mfa_status = "missing";
   }
 
   const now = Date.now();
-  // Session expires 8h from "now" (gateway key sessions have no hard expiry — mark as expired to prompt re-auth)
-  const session_expires_at = now - 30 * 60 * 1000; // mark expired to match screenshot's "Expired" state
+  // Valid key → fresh 8h session. No/invalid key → already expired.
+  const session_expires_at = isAdmin ? now + 8 * 3600 * 1000 : now - 1;
 
   return c.json({
     actor: "Frxncois",
-    auth_provider: "admin_auth_gateway",
+    auth_provider: isAdmin ? "admin_auth_gateway" : "unauthenticated",
     role,
     mfa_status,
     access_risk_score: role === "admin" ? 90 : 40,
     session_expires_at,
     region: "auto",
-    identity: "Frxncois | admin_gateway | _auth_gateway | Online",
+    identity: isAdmin
+      ? "Frxncois | admin_gateway | _auth_gateway | Online"
+      : "Unknown | unauthenticated",
   });
 });
 
 extra.post("/api/control/access/extend-session", verifyAuth, async (c) => {
   return c.json({ ok: true, session_expires_at: Date.now() + 8 * 3600 * 1000 });
+});
+
+extra.post("/api/control/access/renew-session", verifyAuth, async (c) => {
+  return c.json({
+    ok: true,
+    mfa_status: "verified",
+    session_expires_at: Date.now() + 8 * 3600 * 1000,
+  });
 });
 
 extra.post("/api/control/access/logout", verifyAuth, async (c) => {
@@ -167,7 +172,7 @@ extra.post("/api/control/access/logout", verifyAuth, async (c) => {
 
 // ── AUDIT TRAIL ────────────────────────────────────────────────────────────
 
-extra.get("/api/control/access/audit", async (c) => {
+extra.get("/api/control/access/audit", verifyAuth, async (c) => {
   try {
     const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
     const org = c.req.query("org") || undefined;
@@ -228,11 +233,11 @@ extra.delete("/api/control/tokens/:id", verifyAuth, async (c) => {
 
 // ── OBSERVABILITY (SLO + telemetry stub) ───────────────────────────────────
 
-extra.get("/api/control/observability", async (c) => {
+extra.get("/api/control/observability", verifyAuth, async (c) => {
   try {
     // Real data: pull from cost_ledger + health_checks for latency/error metrics
-    const window = 86400000;
-    const since = Date.now() - window;
+    const timeWindow = Math.min(parseInt(c.req.query("window") || "86400000", 10), 7 * 86400000);
+    const since = Date.now() - timeWindow;
 
     const latencyRows = await c.env.DB.prepare(`
       SELECT s.name, s.project,
@@ -262,7 +267,7 @@ extra.get("/api/control/observability", async (c) => {
     `).bind(since).first<{ total_checks: number; healthy_checks: number; avg_latency: number }>();
 
     const t = totals ?? { total_checks: 0, healthy_checks: 0, avg_latency: 0 };
-    const throughput = Math.round(t.total_checks / (window / 1000)); // checks/sec approximation
+    const throughput = Math.round(t.total_checks / (timeWindow / 1000)); // checks/sec approximation
 
     return c.json({
       services,

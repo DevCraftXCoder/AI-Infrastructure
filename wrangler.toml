@@ -16,7 +16,7 @@ simple = { limit = 60, period = 60 }
 [vars]
 FALLBACK_MODEL = "anthropic/claude-haiku-4.5"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-HTTP_REFERER = "https://your-site.com"
+HTTP_REFERER = "https://ai-gateway.frxncois.workers.dev"
 X_TITLE = "AI Gateway"
 
 [triggers]

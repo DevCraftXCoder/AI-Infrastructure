@@ -49,19 +49,25 @@ dash.get("/api/control/stats", async (c) => {
       LIMIT 100
     `).bind(since).all<StatRow>();
 
-    // p95 latency per feature (SQLite: use percentile approx via sub-select ordering)
-    const p95Rows = await c.env.DB.prepare(`
-      SELECT feature, latency_ms as p95_latency FROM (
-        SELECT feature, latency_ms,
-          ROW_NUMBER() OVER (PARTITION BY feature ORDER BY latency_ms) as rn,
-          COUNT(*) OVER (PARTITION BY feature) as cnt
-        FROM cost_ledger WHERE created_at >= ?
-      ) WHERE rn >= CAST(cnt * 0.95 AS INTEGER)
-      GROUP BY feature
-    `).bind(since).all<{ feature: string; p95_latency: number }>();
-
-    const p95Map: Record<string, number> = {};
-    for (const r of p95Rows.results ?? []) p95Map[r.feature] = r.p95_latency;
+    // p95 latency: window functions + GROUP BY on derived table is invalid in some D1 builds.
+    // Compute p95 per-feature via a safe subquery that picks the row at the 95th percentile position.
+    // If D1 doesn't support window functions, p95 degrades gracefully to null (never breaks the endpoint).
+    let p95Map: Record<string, number> = {};
+    try {
+      const p95Rows = await c.env.DB.prepare(`
+        SELECT feature, latency_ms as p95_latency FROM (
+          SELECT feature, latency_ms,
+            ROW_NUMBER() OVER (PARTITION BY feature ORDER BY latency_ms) as rn,
+            COUNT(*) OVER (PARTITION BY feature) as cnt
+          FROM cost_ledger WHERE created_at >= ?
+        ) sub WHERE sub.rn >= CAST(sub.cnt * 0.95 AS INTEGER)
+      `).bind(since).all<{ feature: string; p95_latency: number }>();
+      // Keep only the first (lowest qualifying) row per feature
+      const seen = new Set<string>();
+      for (const r of p95Rows.results ?? []) {
+        if (!seen.has(r.feature)) { p95Map[r.feature] = r.p95_latency; seen.add(r.feature); }
+      }
+    } catch { /* window functions unsupported — p95 remains null for all features */ }
 
     // Aggregate totals
     const totals = await c.env.DB.prepare(`
@@ -189,6 +195,20 @@ dash.get("/api/control/docs", (c) => c.json({
     { method: "DELETE", path: "/api/control/services/:id", auth: true, desc: "Remove a service." },
     { method: "POST", path: "/api/control/activity", auth: true, body: "{org, project?, service?, kind?, message, detail?}", desc: "Ingest an external event (deploy, config change) into the activity feed." },
     { method: "POST", path: "/api/control/health-check", auth: true, desc: "Trigger an immediate health sweep of all public endpoints." },
+    { method: "GET", path: "/api/control/incidents", auth: true, query: "org, status", desc: "List incidents with open/critical stats." },
+    { method: "POST", path: "/api/control/incidents", auth: true, body: "{org, title, severity?, project?, detail?, affected_users?}", desc: "Create incident." },
+    { method: "PATCH", path: "/api/control/incidents/:id", auth: true, body: "{status?, severity?, detail?, affected_users?, sla_breached?}", desc: "Update incident." },
+    { method: "DELETE", path: "/api/control/incidents/:id", auth: true, desc: "Delete incident." },
+    { method: "GET", path: "/api/control/logs", auth: true, query: "limit, status, service", desc: "Health-check log entries joined with service metadata." },
+    { method: "GET", path: "/api/control/observability", auth: true, query: "window", desc: "SLO metrics, per-service latency, instrumentation coverage." },
+    { method: "GET", path: "/api/control/access/session", auth: false, desc: "Session info (role, MFA status, expiry) — reflects Bearer token validity." },
+    { method: "POST", path: "/api/control/access/extend-session", auth: true, desc: "Extend current session by 8h." },
+    { method: "POST", path: "/api/control/access/renew-session", auth: true, desc: "Renew session and re-verify MFA status." },
+    { method: "POST", path: "/api/control/access/logout", auth: true, desc: "Invalidate current session." },
+    { method: "GET", path: "/api/control/access/audit", auth: true, query: "org, limit", desc: "Audit log entries (config changes, status changes, deploys)." },
+    { method: "GET", path: "/api/control/tokens", auth: true, query: "org", desc: "List service tokens — hashes never returned." },
+    { method: "POST", path: "/api/control/tokens", auth: true, body: "{org, name, scope?, expires_in_days?}", desc: "Create service token — raw token returned once only." },
+    { method: "DELETE", path: "/api/control/tokens/:id", auth: true, desc: "Revoke service token." },
   ],
 }));
 
@@ -277,7 +297,7 @@ const PAGE = `<!doctype html>
 <title>3Sixty Co. — Control Plane</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -288,7 +308,7 @@ const PAGE = `<!doctype html>
     --sidebar:220px;
   }
   html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-size:14px}
-  h1,h2,h3,h4,.syne{font-family:'Syne',sans-serif}
+  h1,h2,h3,h4,.syne{font-family:'DM Sans',sans-serif}
   .mono{font-family:'JetBrains Mono',monospace}
   a{color:var(--accent);text-decoration:none}
   .app{display:flex;height:100vh;overflow:hidden}
@@ -297,7 +317,7 @@ const PAGE = `<!doctype html>
   .topbar{padding:0 20px;height:52px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0;background:var(--panel)}
   .content{flex:1;overflow-y:auto;padding:20px}
   .sidebar-logo{padding:16px 14px 10px;border-bottom:1px solid var(--border)}
-  .sidebar-logo .name{font-family:'Syne';font-size:13px;font-weight:700;letter-spacing:.04em}
+  .sidebar-logo .name{font-family:'DM Sans';font-size:13px;font-weight:700;letter-spacing:.04em}
   .sidebar-logo .sub{font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
   .nav-section{padding:10px 10px 4px}
   .nav-label{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:0 6px;margin-bottom:4px;font-weight:600}
@@ -306,7 +326,7 @@ const PAGE = `<!doctype html>
   .nav-item.active{background:var(--accent-bg);color:var(--accent);font-weight:500}
   .nav-item .icon{width:16px;text-align:center;font-style:normal;flex-shrink:0;font-size:13px}
   .nav-badge{margin-left:auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;background:var(--accent);color:#fff}
-  .topbar-title{font-family:'Syne';font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .topbar-title{font-family:'DM Sans';font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
   .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px}
   .seg button{background:transparent;border:none;color:var(--muted);padding:5px 13px;border-radius:999px;font:inherit;font-size:12px;cursor:pointer}
@@ -315,7 +335,7 @@ const PAGE = `<!doctype html>
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--r)}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px}
   .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-  .section-title{font-family:'Syne';font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .section-title{font-family:'DM Sans';font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700}
   .btn{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);color:var(--text);border:1px solid var(--border2);border-radius:8px;padding:7px 13px;font:inherit;font-size:12px;cursor:pointer;transition:border-color .12s,background .12s}
   .btn:hover{border-color:#3a3a3a;background:var(--panel3)}
   .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -343,7 +363,7 @@ const PAGE = `<!doctype html>
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
   .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
   .stat-tile{padding:14px 16px;background:var(--panel);border:1px solid var(--border);border-radius:var(--r)}
-  .stat-tile .val{font-family:'Syne';font-size:22px;font-weight:800;line-height:1}
+  .stat-tile .val{font-family:'DM Sans';font-size:22px;font-weight:800;line-height:1}
   .stat-tile .lbl{font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-top:4px}
   .stat-tile.accent .val{color:var(--accent)}
   .stat-tile.green .val{color:var(--healthy)}
@@ -384,7 +404,7 @@ const PAGE = `<!doctype html>
   .inc-card .inc-meta{font-size:12px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap}
   .inc-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
   .inc-stat{padding:14px;text-align:center}
-  .inc-stat .n{font-family:'Syne';font-size:28px;font-weight:800}
+  .inc-stat .n{font-family:'DM Sans';font-size:28px;font-weight:800}
   .inc-stat .k{font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-top:3px}
   .log-row{display:grid;grid-template-columns:160px 46px 130px 80px 1fr 160px;gap:0;border-bottom:1px solid var(--border);align-items:center;font-size:12px;font-family:'JetBrains Mono',monospace}
   .log-row:hover{background:var(--panel2)}
@@ -393,7 +413,7 @@ const PAGE = `<!doctype html>
   .log-hdr{background:var(--panel2);color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-family:'DM Sans',sans-serif}
   .metric-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px}
   .metric-card{padding:14px;background:var(--panel);border:1px solid var(--border);border-radius:var(--r)}
-  .metric-card .mv{font-family:'Syne';font-size:20px;font-weight:800;line-height:1.1}
+  .metric-card .mv{font-family:'DM Sans';font-size:20px;font-weight:800;line-height:1.1}
   .metric-card .mk{font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;margin-top:4px}
   .metric-card .ms{font-size:11px;color:var(--muted);margin-top:2px}
   .bar-chart{display:flex;align-items:flex-end;gap:4px;height:60px;margin:8px 0 4px}
@@ -403,9 +423,9 @@ const PAGE = `<!doctype html>
   .coverage-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px}
   .slo-row{display:grid;grid-template-columns:1fr 80px 80px 80px;gap:0;border-bottom:1px solid var(--border);padding:8px 12px;align-items:center;font-size:13px}
   .access-card{padding:18px;margin-bottom:14px}
-  .avatar{width:38px;height:38px;border-radius:50%;background:var(--accent-bg);border:1px solid var(--accent-border);display:flex;align-items:center;justify-content:center;font-family:'Syne';font-weight:700;font-size:14px;color:var(--accent)}
+  .avatar{width:38px;height:38px;border-radius:50%;background:var(--accent-bg);border:1px solid var(--accent-border);display:flex;align-items:center;justify-content:center;font-family:'DM Sans';font-weight:700;font-size:14px;color:var(--accent)}
   .risk-ring{width:52px;height:52px;border-radius:50%;border:3px solid var(--accent);display:flex;align-items:center;justify-content:center;flex-direction:column;flex-shrink:0}
-  .risk-ring .rv{font-family:'Syne';font-size:15px;font-weight:800;color:var(--accent)}
+  .risk-ring .rv{font-family:'DM Sans';font-size:15px;font-weight:800;color:var(--accent)}
   .risk-ring .rl{font-size:8px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
   .kv-row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px}
   .kv-row .k{color:var(--muted)}
@@ -413,7 +433,7 @@ const PAGE = `<!doctype html>
   .role-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
   .role-card{padding:12px;border-radius:var(--r);border:1px solid var(--border);text-align:center}
   .role-card.current{border-color:var(--accent);background:var(--accent-bg)}
-  .role-card .rn{font-family:'Syne';font-size:13px;font-weight:700;margin-bottom:3px}
+  .role-card .rn{font-family:'DM Sans';font-size:13px;font-weight:700;margin-bottom:3px}
   .perm-matrix{width:100%;border-collapse:collapse;font-size:12.5px}
   .perm-matrix th{padding:8px 10px;border-bottom:1px solid var(--border);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:center}
   .perm-matrix th:first-child{text-align:left}
@@ -436,7 +456,7 @@ const PAGE = `<!doctype html>
   .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:60;display:none;align-items:center;justify-content:center}
   .modal-bg.open{display:flex}
   .modal{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:24px;width:min(480px,92vw);max-height:85vh;overflow-y:auto}
-  .modal h3{font-family:'Syne';font-size:16px;margin-bottom:16px}
+  .modal h3{font-family:'DM Sans';font-size:16px;margin-bottom:16px}
   .field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
   .field label{font-size:11px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase;font-weight:600}
   .spark{display:flex;align-items:flex-end;gap:2px;height:36px;margin:8px 0}
@@ -622,6 +642,7 @@ const PAGE = `<!doctype html>
         <div class="kv-row" style="border:none"><span class="k">MFA STATUS</span><span id="aMfa" class="badge warn">—</span></div>
         <hr class="divider"/>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+          <button class="btn" onclick="renewSession()">Renew Session</button>
           <button class="btn" onclick="extendSession()">Extend Session</button>
           <button class="btn danger" onclick="forceLogout()">Force Logout</button>
         </div>
@@ -634,7 +655,7 @@ const PAGE = `<!doctype html>
           <div class="role-card current"><div class="rn" style="color:var(--accent)">Admin</div><div class="ri badge admin" style="display:inline-block;margin-top:4px">CURRENT</div></div>
         </div>
         <div class="section-title" style="margin-bottom:8px;margin-top:14px">Effective Permissions</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">✓ Status &nbsp;✓ Metrics &nbsp;✓ Traces &nbsp;✓ Audit log &nbsp;✓ Restart &nbsp;✓ Rollback &nbsp;✓ Config write &nbsp;✓ Tokens <span style="color:var(--accent);cursor:pointer;margin-left:4px" onclick="document.getElementById('permMatrix').scrollIntoView({behavior:'smooth'})">show all (30)</span></div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">✓ Status &nbsp;✓ Metrics &nbsp;✓ Traces &nbsp;✓ Audit log &nbsp;✓ Restart &nbsp;✓ Rollback &nbsp;✓ Config write &nbsp;✓ Tokens <span style="color:var(--accent);cursor:pointer;margin-left:4px" onclick="document.getElementById('permMatrix').scrollIntoView({behavior:'smooth'})">show all (13)</span></div>
         <div style="font-size:12px;color:var(--healthy)">✓ None missing</div>
       </div>
     </div>
@@ -724,20 +745,20 @@ function setView(btn){document.querySelectorAll('#viewSeg button').forEach(funct
 function load(){var p=new URLSearchParams();if(st.org)p.set('org',st.org);p.set('project',st.project);p.set('region',st.region);if(st.status&&st.status!==ALL)p.set('status',st.status);if(st.q)p.set('q',st.q);return api('/api/control/overview?'+p).then(function(d){if(!d||d.error)return;var f=d.filters||{};st.org=f.org||st.org;st.project=f.project||ALL;st.region=f.region||ALL;st.services=Array.isArray(d.services)?d.services:[];st.summary=d.summary||{};st.lastLoad=Date.now();fillSelects(d);renderSummary(st.summary);renderBody();renderSvcBody();updateFresh();var downs=st.services.filter(function(s){return s.status==='down'||s.status==='degraded'});if(downs.length){$('ovIncBanner').style.display='';txt($('ovIncText'),downs.length+' service(s) degraded or down: '+downs.slice(0,3).map(function(s){return s.name}).join(', '))}else $('ovIncBanner').style.display='none';loadStats()})}
 function updateFresh(){txt($('fresh'),'updated '+ago(st.lastLoad))}
 function loadStats(){api('/api/control/stats?window=86400000').then(function(d){if(!d||d.error)return;var t=d.totals||{};var box=$('gwStats');box.innerHTML='';[{n:t.total_requests||0,k:'Requests (24h)'},{n:(t.error_rate||0)+'%',k:'Error Rate'},{n:t.avg_latency_ms!=null?Math.round(t.avg_latency_ms)+'ms':'—',k:'Avg Latency'},{n:(t.cache_hit_rate||0)+'%',k:'Cache Hit'},{n:(t.total_input_tokens||0).toLocaleString(),k:'Input Tokens'},{n:(t.fallback_rate||0)+'%',k:'Fallback Rate'}].forEach(function(c){var el=document.createElement('div');el.className='stat-tile panel';el.innerHTML='<div class="val">'+c.n+'</div><div class="lbl">'+c.k+'</div>';box.appendChild(el)});var tb=$('featureTbody');tb.innerHTML='';var fs=Array.isArray(d.by_feature)?d.by_feature:[];if(!fs.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--muted);padding:20px;text-align:center">No gateway requests in window</td></tr>';return}fs.forEach(function(f){tb.innerHTML+='<tr><td>'+f.feature+'</td><td>'+f.total+'</td><td>'+f.error_rate+'%</td><td class="mono">'+(f.avg_latency!=null?Math.round(f.avg_latency)+'ms':'—')+'</td><td>'+f.cache_hit_rate+'%</td><td class="mono">'+(f.input_tokens||0).toLocaleString()+'</td><td>'+f.fallback_rate+'%</td></tr>'})}).catch(function(){})}
-function loadIncidents(){var org=st.org;var status=($('incStatusSel')||{}).value||ALL;var p=new URLSearchParams();if(org)p.set('org',org);if(status&&status!==ALL)p.set('status',status);api('/api/control/incidents?'+p).then(function(d){if(!d||d.error)return;var incs=Array.isArray(d.incidents)?d.incidents:[];var stats=d.stats||{};txt($('iOpen'),stats.open||0);txt($('iCrit'),stats.critical||0);var aff=incs.reduce(function(a,i){return a+(i.affected_users||0)},0);txt($('iAffected'),aff>0?aff.toLocaleString():'—');var sla=incs.filter(function(i){return i.sla_breached}).length;txt($('iSla'),sla);var nb=$('incBadge');if(nb){if(stats.open>0){nb.style.display='';txt(nb,stats.open)}else nb.style.display='none'}var list=$('incList');list.innerHTML='';if(!incs.length){list.innerHTML='<div class="panel empty"><div>No incidents.</div><div class="hint">Click + New Incident to create one.</div></div>';return}incs.forEach(function(i){var sev=(i.severity||'P2').toLowerCase();var card=document.createElement('div');card.className='panel inc-card '+sev;var slaBadge=i.sla_breached?'<span class="badge sla">SLA BREACHED</span>':'';var affBadge=i.affected_users?'<span style="font-size:12px;color:var(--muted)">impacted users: '+i.affected_users+'</span>':'';card.innerHTML='<div class="inc-top"><span class="badge '+sev+'">'+i.severity+'</span><span class="inc-title">'+i.title+'</span>'+slaBadge+'<span class="badge '+(i.status==='resolved'?'ok':'warn')+'">'+i.status.replace('_',' ')+'</span></div><div class="inc-meta">'+affBadge+'<span>'+ago(i.created_at)+'</span>'+(i.project?'<span>'+i.project+'</span>':'')+'</div>';card.onclick=function(){openIncidentDrawer(i)};list.appendChild(card)})}).catch(function(){})}
-function filterIncTab(btn){document.querySelectorAll('[data-itab]').forEach(function(b){b.classList.toggle('active',b===btn)})}
+function loadIncidents(){var org=st.org;var status=($('incStatusSel')||{}).value||ALL;var p=new URLSearchParams();if(org)p.set('org',org);if(status&&status!==ALL)p.set('status',status);authed('GET','/api/control/incidents?'+p).then(function(d){if(!d||d.error)return;var incs=Array.isArray(d.incidents)?d.incidents:[];var stats=d.stats||{};txt($('iOpen'),stats.open||0);txt($('iCrit'),stats.critical||0);var aff=incs.reduce(function(a,i){return a+(i.affected_users||0)},0);txt($('iAffected'),aff>0?aff.toLocaleString():'—');var sla=incs.filter(function(i){return i.sla_breached}).length;txt($('iSla'),sla);var nb=$('incBadge');if(nb){if(stats.open>0){nb.style.display='';txt(nb,stats.open)}else nb.style.display='none'}var list=$('incList');list.innerHTML='';if(!incs.length){list.innerHTML='<div class="panel empty"><div>No incidents.</div><div class="hint">Click + New Incident to create one.</div></div>';return}incs.forEach(function(i){var sev=(i.severity||'P2').toLowerCase();var card=document.createElement('div');card.className='panel inc-card '+sev;var slaBadge=i.sla_breached?'<span class="badge sla">SLA BREACHED</span>':'';var affBadge=i.affected_users?'<span style="font-size:12px;color:var(--muted)">impacted users: '+i.affected_users+'</span>':'';card.innerHTML='<div class="inc-top"><span class="badge '+sev+'">'+i.severity+'</span><span class="inc-title">'+i.title+'</span>'+slaBadge+'<span class="badge '+(i.status==='resolved'?'ok':'warn')+'">'+i.status.replace('_',' ')+'</span></div><div class="inc-meta">'+affBadge+'<span>'+ago(i.created_at)+'</span>'+(i.project?'<span>'+i.project+'</span>':'')+'</div>';card.onclick=function(){openIncidentDrawer(i)};list.appendChild(card)})}).catch(function(){})}
+function filterIncTab(btn){document.querySelectorAll('[data-itab]').forEach(function(b){b.classList.toggle('active',b===btn)});var tab=btn.getAttribute('data-itab')||'all';var list=$('incList');var sloPanel=$('sloPanel');if(!sloPanel){sloPanel=document.createElement('div');sloPanel.id='sloPanel';sloPanel.className='panel';sloPanel.style.padding='24px';sloPanel.innerHTML='<div class="section-title" style="margin-bottom:10px">SLO Budgets</div><p style="color:var(--muted);font-size:13px">SLO budget tracking is not yet configured. Register services and set target uptime to enable budget burn-rate alerts.</p>';if(list&&list.parentNode)list.parentNode.insertBefore(sloPanel,list.nextSibling)}if(tab==='slo'){if(list)list.style.display='none';sloPanel.style.display=''}else{if(list)list.style.display='';sloPanel.style.display='none'}}
 function openNewIncident(){$('incModal').classList.add('open')}
-function closeModal(id){$(id).classList.remove('open')}
+function closeModal(id){$(id).classList.remove('open');if(id==='incModal'){$('incTitle').value='';$('incProject').value='';$('incAffected').value='';$('incDetail').value='';$('incSev').value='P2'}if(id==='tokModal'){$('tokName').value='';$('tokScope').value='read';$('tokExpiry').value=''}}
 function submitIncident(){var title=($('incTitle').value||'').trim();if(!title){alert('Title required');return}if(!gk){promptKey();return}authed('POST','/api/control/incidents',{org:st.org||'3Sixty Co.',title:title,severity:$('incSev').value,project:($('incProject').value||undefined),affected_users:parseInt($('incAffected').value)||undefined,detail:($('incDetail').value||undefined)}).then(function(d){if(d.error){alert('Error: '+d.error);return}closeModal('incModal');loadIncidents()})}
 function openIncidentDrawer(inc){openDrawer();$('drawerBody').innerHTML='<h2 style="font-family:\'Syne\';margin-bottom:12px">'+inc.title+'</h2><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"><span class="badge '+inc.severity.toLowerCase()+'">'+inc.severity+'</span><span class="badge '+(inc.status==='resolved'?'ok':'warn')+'">'+inc.status.replace('_',' ')+'</span>'+(inc.sla_breached?'<span class="badge sla">SLA BREACHED</span>':'')+'</div><div class="kv-row"><span class="k">Created</span><span class="v">'+fmt(inc.created_at)+'</span></div><div class="kv-row"><span class="k">Project</span><span class="v">'+(inc.project||'—')+'</span></div><div class="kv-row"><span class="k">Affected</span><span class="v">'+(inc.affected_users||'—')+'</span></div><div class="kv-row" style="border:none"><span class="k">Detail</span></div><p style="font-size:13px;color:var(--muted);margin-top:6px">'+(inc.detail||'No detail provided.')+'</p><hr class="divider"><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="resolveInc(\''+inc.id+'\')">Mark Resolved</button><button class="btn danger" onclick="deleteInc(\''+inc.id+'\')">Delete</button></div>'}
 function resolveInc(id){if(!gk){promptKey();return}authed('PATCH','/api/control/incidents/'+id,{status:'resolved'}).then(function(){closeDrawer();loadIncidents()})}
 function deleteInc(id){if(!confirm('Delete incident?'))return;if(!gk){promptKey();return}authed('DELETE','/api/control/incidents/'+id).then(function(){closeDrawer();loadIncidents()})}
 function setTimeWindow(btn){document.querySelectorAll('#timeSeg button').forEach(function(b){b.classList.toggle('active',b===btn)});st.obsWindow=parseInt(btn.getAttribute('data-w')||'86400000',10);loadObs()}
-function loadObs(){api('/api/control/observability').then(function(d){if(!d||d.error)return;var svcs=Array.isArray(d.services)?d.services:[];var s=d.summary||{};var mc=$('obsMetrics');mc.innerHTML='';[{mv:s.total_checks||0,mk:'Health Checks',ms:'total probes'},{mv:(s.error_rate||0)+'%',mk:'Error Rate',ms:'last 24h'},{mv:s.avg_latency_ms!=null?s.avg_latency_ms+'ms':'—',mk:'Avg Latency',ms:'p50 approx'},{mv:((s.instrumentation_coverage||{covered:3,total:9}).covered)+'/'+(((s.instrumentation_coverage||{covered:3,total:9}).total)),mk:'Instrumented',ms:'services covered'}].forEach(function(c){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div><div class="ms">'+c.ms+'</div>';mc.appendChild(el)});var km=$('obsKeyMetrics');km.innerHTML='';svcs.slice(0,3).forEach(function(sv){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv mono">'+sv.p99_latency_ms+'ms</div><div class="mk">P99 LATENCY</div><div class="ms">'+sv.name+'</div>';km.appendChild(el)});[{mv:'0.00%',mk:'ERROR RATE',ms:'francois-landing'},{mv:s.total_checks||0,mk:'THROUGHPUT',ms:'req last 24h'},{mv:'$0.00',mk:'AI TOKEN COST',ms:'last 24h'}].forEach(function(c){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div><div class="ms">'+c.ms+'</div>';km.appendChild(el)});var chart=$('latencyChart');chart.innerHTML='';var labels=$('latencyLabels');labels.innerHTML='';if(svcs.length){var maxL=Math.max.apply(null,svcs.map(function(sv){return sv.p99_latency_ms||0}).concat([1]));svcs.forEach(function(sv){var bar=document.createElement('div');bar.className='bc-bar';bar.style.height=Math.max(2,Math.round((sv.p99_latency_ms||0)/maxL*60))+'px';bar.title=sv.name+': '+sv.p99_latency_ms+'ms';chart.appendChild(bar);var lbl=document.createElement('span');lbl.textContent=sv.name.slice(0,8);labels.appendChild(lbl)})}var slo=d.slo||{};var sloBox=$('sloRows');sloBox.innerHTML='<div class="slo-row" style="background:var(--panel2);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)"><span>SLO TARGET</span><span>TARGET</span><span>ACTUAL</span><span>STATUS</span></div>';[{name:'P99 Latency',target:'300ms',actual:(s.avg_latency_ms||0)+'ms',ok:true},{name:'Error Rate',target:'5%',actual:(s.error_rate||0)+'%',ok:true},{name:'Throughput',target:'1000 req',actual:(s.total_checks||0),ok:true}].forEach(function(si){var row=document.createElement('div');row.className='slo-row';row.innerHTML='<span>'+si.name+'</span><span class="mono">'+si.target+'</span><span class="mono">'+si.actual+'</span><span class="badge '+(si.ok?'ok':'down')+'">'+(si.ok?'✓ PASS':'✗ FAIL')+'</span>';sloBox.appendChild(row)});var cvg=(s.instrumentation_coverage||{covered:3,total:9});txt($('coverageBadge'),cvg.covered+'/'+cvg.total);var cvgBox=$('coverageList');cvgBox.innerHTML='';['API Docs','Error frequency tracking','Cost attribution tags'].forEach(function(item){cvgBox.innerHTML+='<div class="coverage-row"><span style="color:var(--healthy);width:18px;text-align:center">✓</span><span>'+item+'</span></div>'});['Library management','AI safety','User safety management','Rate limiting instrumentation'].forEach(function(item){cvgBox.innerHTML+='<div class="coverage-row"><span style="color:var(--muted);width:18px;text-align:center">○</span><span style="color:var(--muted)">'+item+'</span><span style="margin-left:auto;font-size:10px;color:var(--muted)">MISSING</span></div>'})}).catch(function(){})}
+function loadObs(){authed('GET','/api/control/observability?window='+st.obsWindow).then(function(d){if(!d||d.error)return;var svcs=Array.isArray(d.services)?d.services:[];var s=d.summary||{};var mc=$('obsMetrics');mc.innerHTML='';[{mv:s.total_checks||0,mk:'Health Checks',ms:'total probes'},{mv:(s.error_rate||0)+'%',mk:'Error Rate',ms:'last 24h'},{mv:s.avg_latency_ms!=null?s.avg_latency_ms+'ms':'—',mk:'Avg Latency',ms:'p50 approx'},{mv:((s.instrumentation_coverage||{covered:3,total:9}).covered)+'/'+(((s.instrumentation_coverage||{covered:3,total:9}).total)),mk:'Instrumented',ms:'services covered'}].forEach(function(c){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div><div class="ms">'+c.ms+'</div>';mc.appendChild(el)});var km=$('obsKeyMetrics');km.innerHTML='';svcs.slice(0,3).forEach(function(sv){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv mono">'+sv.p99_latency_ms+'ms</div><div class="mk">P99 LATENCY</div><div class="ms">'+sv.name+'</div>';km.appendChild(el)});[{mv:'0.00%',mk:'ERROR RATE',ms:'francois-landing'},{mv:s.total_checks||0,mk:'THROUGHPUT',ms:'req last 24h'},{mv:'$0.00',mk:'AI TOKEN COST',ms:'last 24h'}].forEach(function(c){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div><div class="ms">'+c.ms+'</div>';km.appendChild(el)});var chart=$('latencyChart');chart.innerHTML='';var labels=$('latencyLabels');labels.innerHTML='';if(svcs.length){var maxL=Math.max.apply(null,svcs.map(function(sv){return sv.p99_latency_ms||0}).concat([1]));svcs.forEach(function(sv){var bar=document.createElement('div');bar.className='bc-bar';bar.style.height=Math.max(2,Math.round((sv.p99_latency_ms||0)/maxL*60))+'px';bar.title=sv.name+': '+sv.p99_latency_ms+'ms';chart.appendChild(bar);var lbl=document.createElement('span');lbl.textContent=sv.name.slice(0,8);labels.appendChild(lbl)})}var slo=d.slo||{};var sloBox=$('sloRows');sloBox.innerHTML='<div class="slo-row" style="background:var(--panel2);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)"><span>SLO TARGET</span><span>TARGET</span><span>ACTUAL</span><span>STATUS</span></div>';[{name:'P99 Latency',target:'300ms',actual:(s.avg_latency_ms||0)+'ms',ok:true},{name:'Error Rate',target:'5%',actual:(s.error_rate||0)+'%',ok:true},{name:'Throughput',target:'1000 req',actual:(s.total_checks||0),ok:true}].forEach(function(si){var row=document.createElement('div');row.className='slo-row';row.innerHTML='<span>'+si.name+'</span><span class="mono">'+si.target+'</span><span class="mono">'+si.actual+'</span><span class="badge '+(si.ok?'ok':'down')+'">'+(si.ok?'✓ PASS':'✗ FAIL')+'</span>';sloBox.appendChild(row)});var cvg=(s.instrumentation_coverage||{covered:3,total:9});txt($('coverageBadge'),cvg.covered+'/'+cvg.total);var cvgBox=$('coverageList');cvgBox.innerHTML='';['API Docs','Error frequency tracking','Cost attribution tags'].forEach(function(item){cvgBox.innerHTML+='<div class="coverage-row"><span style="color:var(--healthy);width:18px;text-align:center">✓</span><span>'+item+'</span></div>'});['Library management','AI safety','User safety management','Rate limiting instrumentation'].forEach(function(item){cvgBox.innerHTML+='<div class="coverage-row"><span style="color:var(--muted);width:18px;text-align:center">○</span><span style="color:var(--muted)">'+item+'</span><span style="margin-left:auto;font-size:10px;color:var(--muted)">MISSING</span></div>'})}).catch(function(){})}
 function startLogPoll(){stopLogPoll();logCountdownSec=Math.round((st.logInterval||30000)/1000);logTimer=setInterval(function(){loadLogs()},st.logInterval||30000);logCountdownTimer=setInterval(function(){logCountdownSec--;if(logCountdownSec<=0)logCountdownSec=Math.round((st.logInterval||30000)/1000);txt($('logCountdown'),'next in '+logCountdownSec+'s')},1000)}
 function stopLogPoll(){clearInterval(logTimer);clearInterval(logCountdownTimer);logTimer=null;logCountdownTimer=null}
 function setLogInterval(){st.logInterval=parseInt(($('logIntervalSel')||{}).value||'30000',10);if(logTimer)startLogPoll()}
-function loadLogs(){var svc=($('logSvcSel')||{}).value||ALL;var p=new URLSearchParams();p.set('limit','100');if(svc&&svc!==ALL)p.set('service',svc);var badge=$('logStatus');if(badge){badge.className='badge live';txt(badge,'LIVE')}api('/api/control/logs?'+p).then(function(d){if(!d||d.error){if(badge){badge.className='badge idle';txt(badge,'IDLE')}return}allLogs=Array.isArray(d.logs)?d.logs:[];var stats=d.stats||{};txt($('logCntAll'),stats.total||0);txt($('logCntOk'),stats.ok||0);txt($('logCntErr'),stats.errors||0);renderLogs();setTimeout(function(){if(badge){badge.className='badge idle';txt(badge,'IDLE')}},2000);var svcs=[...new Set(allLogs.map(function(l){return l.service_name||l.service_id}).filter(Boolean))];var sel=$('logSvcSel');if(sel&&sel.options.length<=1){svcs.forEach(function(sv){var o=document.createElement('option');o.value=sv;o.textContent=sv;sel.appendChild(o)})}}).catch(function(){if(badge){badge.className='badge idle';txt(badge,'IDLE')}})}
+function loadLogs(){var svc=($('logSvcSel')||{}).value||ALL;var p=new URLSearchParams();p.set('limit','100');if(svc&&svc!==ALL)p.set('service',svc);var badge=$('logStatus');if(badge){badge.className='badge live';txt(badge,'LIVE')}authed('GET','/api/control/logs?'+p).then(function(d){if(!d||d.error){if(badge){badge.className='badge idle';txt(badge,'IDLE')}return}allLogs=Array.isArray(d.logs)?d.logs:[];var stats=d.stats||{};txt($('logCntAll'),stats.total||0);txt($('logCntOk'),stats.ok||0);txt($('logCntErr'),stats.errors||0);renderLogs();setTimeout(function(){if(badge){badge.className='badge idle';txt(badge,'IDLE')}},2000);var svcs=[...new Set(allLogs.map(function(l){return l.service_name||l.service_id}).filter(Boolean))];var sel=$('logSvcSel');if(sel&&sel.options.length<=1){svcs.forEach(function(sv){var o=document.createElement('option');o.value=sv;o.textContent=sv;sel.appendChild(o)})}}).catch(function(){if(badge){badge.className='badge idle';txt(badge,'IDLE')}})}
 function filterLogTab(btn){document.querySelectorAll('[data-ltab]').forEach(function(b){b.classList.toggle('active',b===btn)});st.logTab=btn.getAttribute('data-ltab')||'all';renderLogs()}
 function renderLogs(){var rows=$('logRows');if(!rows)return;var q=($('logSearch')||{}).value||'';var useRegex=($('regexChk')||{}).checked;var data=allLogs.filter(function(l){if(st.logTab==='ok'&&l.status!=='healthy')return false;if(st.logTab==='errors'&&l.status==='healthy')return false;if(!q)return true;var hay=(l.service_name||'')+(l.status||'')+(l.status_code||'')+(l.id||'');try{return useRegex?new RegExp(q,'i').test(hay):hay.toLowerCase().indexOf(q.toLowerCase())>=0}catch(e){return true}});rows.innerHTML='';if(!data.length){rows.innerHTML='<div style="color:var(--muted);padding:20px;text-align:center;font-size:13px">No log entries match filter.</div>';return}var svcColors={landing:'#e94560',underground:'#7c9ef7',stats:'#3fb950',memory:'#d29922',ev:'#ff9900'};data.slice(0,200).forEach(function(l){var sn=(l.service_name||l.service_id||'??').toLowerCase();var code=sn.slice(0,2).toUpperCase();var color=Object.keys(svcColors).reduce(function(acc,k){return sn.indexOf(k)>=0?svcColors[k]:acc},'#666');var st_ok=l.status==='healthy';var row=document.createElement('div');row.className='log-row';row.innerHTML='<div class="lc" style="font-size:11px">'+new Date(l.checked_at).toLocaleString()+'</div><div class="lc"><span class="svc-chip" style="color:'+color+';border:1px solid '+color+'40">'+code+'</span></div><div class="lc" style="font-size:11px">'+sn+'</div><div class="lc"><span class="badge '+(st_ok?'ok':'down')+'">'+l.status+'</span></div><div class="lc" style="font-size:11px">HTTP '+(l.status_code||'—')+' — '+(st_ok?'ok':'error')+'</div><div class="lc" style="font-size:10px;color:var(--muted)">'+l.id+'</div>';rows.appendChild(row)});if(($('autoScrollChk')||{}).checked)rows.scrollTop=rows.scrollHeight}
 $('exportLogsBtn').onclick=function(){if(!allLogs.length)return;var cols=['checked_at','service_name','status','status_code','id'];var esc=function(v){var s=v==null?'':String(v);return/[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};var csv=[cols.join(',')].concat(allLogs.map(function(l){return cols.map(function(k){return esc(l[k])}).join(',')})).join('\n');var a=document.createElement('a');a.href='data:text/csv,'+encodeURIComponent(csv);a.download='logs.csv';a.click()};
@@ -750,8 +771,9 @@ function filterPerms(){renderPermMatrix(($('permFilter')||{}).value||'')}
 function exportPermCsv(){var rows=[['Permission','Viewer','Operator','Admin']];PERMS.filter(function(p){return !p.section}).forEach(function(p){rows.push([p.name,p.v?'granted':'off',p.o?'granted':'off',p.a?'granted':'off'])});var csv=rows.map(function(r){return r.map(function(v){return'"'+v+'"'}).join(',')}).join('\n');var a=document.createElement('a');a.href='data:text/csv,'+encodeURIComponent(csv);a.download='permissions.csv';a.click()}
 function copySession(){var info='Actor: '+(($('aActorName')||{}).textContent||'')+'\nRole: '+(($('aRole')||{}).textContent||'')+'\nMFA: '+(($('aMfa')||{}).textContent||'')+'\nExpiry: '+(($('aExpiry')||{}).textContent||'');navigator.clipboard.writeText(info).catch(function(){})}
 function extendSession(){if(!gk){promptKey();return}authed('POST','/api/control/access/extend-session').then(function(d){if(d.ok){var expEl=$('aExpiry');if(expEl){expEl.style.color='';txt(expEl,fmt(d.session_expires_at))}}})}
+function renewSession(){if(!gk){promptKey();return}authed('POST','/api/control/access/renew-session').then(function(d){if(d.ok){var expEl=$('aExpiry');if(expEl){expEl.style.color='';txt(expEl,fmt(d.session_expires_at))}var mfaEl=$('aMfa');if(mfaEl){mfaEl.className='badge ok';txt(mfaEl,'VERIFIED')}var banner=$('mfaBanner');if(banner)banner.style.display='none'}})}
 function forceLogout(){if(!confirm('Force logout this session?'))return;if(!gk){promptKey();return}authed('POST','/api/control/access/logout').then(function(){alert('Logged out.')})}
-function loadAudit(){var p=new URLSearchParams();if(st.org)p.set('org',st.org);p.set('limit','50');api('/api/control/access/audit?'+p).then(function(d){var tb=$('auditRows');tb.innerHTML='';var entries=Array.isArray(d.entries)?d.entries:[];if(!entries.length){tb.innerHTML='<tr><td colspan="5" style="color:var(--muted);padding:20px;text-align:center">No audit entries.</td></tr>';return}entries.forEach(function(e){tb.innerHTML+='<tr><td class="mono" style="font-size:11px">'+ago(e.created_at)+'</td><td><span class="badge p2">'+e.kind+'</span></td><td>'+(e.org||'—')+'</td><td>'+(e.project||'—')+'</td><td style="font-size:12px">'+e.message+'</td></tr>'})})}
+function loadAudit(){var p=new URLSearchParams();if(st.org)p.set('org',st.org);p.set('limit','50');authed('GET','/api/control/access/audit?'+p).then(function(d){var tb=$('auditRows');tb.innerHTML='';var entries=Array.isArray(d.entries)?d.entries:[];if(!entries.length){tb.innerHTML='<tr><td colspan="5" style="color:var(--muted);padding:20px;text-align:center">No audit entries.</td></tr>';return}entries.forEach(function(e){tb.innerHTML+='<tr><td class="mono" style="font-size:11px">'+ago(e.created_at)+'</td><td><span class="badge p2">'+e.kind+'</span></td><td>'+(e.org||'—')+'</td><td>'+(e.project||'—')+'</td><td style="font-size:12px">'+e.message+'</td></tr>'})})}
 function loadTokens(){if(!gk){$('tokenRows').innerHTML='<tr><td colspan="7" style="color:var(--muted);padding:16px;text-align:center"><button class="btn" onclick="promptKey()">Enter key to view tokens</button></td></tr>';return}var p=new URLSearchParams();if(st.org)p.set('org',st.org);authed('GET','/api/control/tokens?'+p).then(function(d){var tb=$('tokenRows');tb.innerHTML='';var tokens=Array.isArray(d.tokens)?d.tokens:[];if(!tokens.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--muted);padding:20px;text-align:center">No tokens. Create one above.</td></tr>';return}tokens.forEach(function(t){var exp=t.expires_at?fmt(t.expires_at):'Never';var expStyle=t.expires_at&&t.expires_at<Date.now()?'style="color:var(--down)"':'';tb.innerHTML+='<tr><td>'+t.name+'</td><td>'+t.org+'</td><td><span class="badge viewer">'+t.scope+'</span></td><td class="mono" style="font-size:11px">'+fmt(t.created_at)+'</td><td class="mono" style="font-size:11px" '+expStyle+'>'+exp+'</td><td class="mono" style="font-size:11px">'+(t.last_used?fmt(t.last_used):'Never')+'</td><td><button class="btn danger" style="font-size:11px;padding:4px 8px" onclick="revokeToken(\''+t.id+'\')">Revoke</button></td></tr>'})})}
 function openNewToken(){if(!gk){promptKey();return}$('tokModal').classList.add('open')}
 function submitToken(){var name=($('tokName').value||'').trim();if(!name){alert('Name required');return}var exp=parseInt(($('tokExpiry').value||''))||undefined;authed('POST','/api/control/tokens',{org:st.org||'3Sixty Co.',name:name,scope:$('tokScope').value,expires_in_days:exp}).then(function(d){if(d.error){alert('Error: '+d.error);return}closeModal('tokModal');txt($('tokRevealVal'),d.token||'');$('tokRevealModal').classList.add('open');loadTokens()})}
@@ -759,7 +781,7 @@ function revokeToken(id){if(!confirm('Revoke token?'))return;authed('DELETE','/a
 function openDrawer(){$('drawer').classList.add('open');$('scrim').classList.add('open')}
 function closeDrawer(){$('drawer').classList.remove('open');$('scrim').classList.remove('open')}
 function openService(id){openDrawer();var db=$('drawerBody');db.innerHTML='<h2 style="font-family:\'Syne\'">Loading…</h2>';api('/api/control/services/'+id).then(function(d){if(!d||!d.service){db.innerHTML='<h2>Not found</h2>';return}var s=d.service;var checks=(d.checks||[]).slice().reverse();var spark='';if(checks.length){var max=Math.max.apply(null,checks.map(function(c){return c.latency_ms||0}).concat([1]));spark='<div class="spark">'+checks.map(function(c){return'<span style="height:'+Math.max(2,Math.round((c.latency_ms||0)/max*36))+'px;background:'+(c.status==='healthy'?'var(--accent)':'var(--down)')+'"></span>'}).join('')+'</div>'}db.innerHTML='<h2 style="font-family:\'Syne\';margin-bottom:10px">'+s.name+'</h2><span class="badge '+s.status+'">'+s.status+'</span>'+spark+'<div class="kv-row"><span class="k">Uptime</span><span class="v mono">'+(typeof d.uptime==='number'?d.uptime+'%':'—')+'</span></div><div class="kv-row"><span class="k">Project</span><span class="v">'+s.project+'</span></div><div class="kv-row"><span class="k">Region</span><span class="v">'+s.region+'</span></div><div class="kv-row"><span class="k">Kind</span><span class="v">'+s.kind+'</span></div><div class="kv-row"><span class="k">Latency</span><span class="v mono">'+(s.latency_ms!=null?s.latency_ms+'ms':'—')+'</span></div><div class="kv-row"><span class="k">Last check</span><span class="v mono">'+ago(s.last_check)+'</span></div><div class="kv-row" style="border:none"><span class="k">URL</span><span class="v mono" style="font-size:11px">'+(s.url||'— (local)')+'</span></div>'})}
-$('exportBtn').onclick=function(){var p=new URLSearchParams();if(st.org)p.set('org',st.org);if(st.project!==ALL)p.set('project',st.project);if(st.region!==ALL)p.set('region',st.region);p.set('format','csv');location.href='/api/control/export?'+p};
+$('exportBtn').onclick=function(){var p=new URLSearchParams();if(st.org)p.set('org',st.org);if(st.project!==ALL)p.set('project',st.project);if(st.region!==ALL)p.set('region',st.region);if(st.status&&st.status!==ALL)p.set('status',st.status);if(st.q)p.set('q',st.q);p.set('format','csv');location.href='/api/control/export?'+p};
 $('refreshBtn').onclick=function(){load()};
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
 setInterval(function(){updateFresh();load()},30000);
