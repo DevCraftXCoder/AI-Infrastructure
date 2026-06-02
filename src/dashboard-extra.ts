@@ -280,7 +280,20 @@ extra.get("/api/control/observability", verifyAuth, async (c) => {
         total_checks: t.total_checks,
         error_rate: t.total_checks > 0 ? Math.round(((t.total_checks - t.healthy_checks) / t.total_checks) * 10000) / 100 : 0,
         avg_latency_ms: Math.round(t.avg_latency ?? 0),
-        instrumentation_coverage: { covered: 3, total: 9 },
+        instrumentation_coverage: await (async () => {
+          // "covered" = services that have at least one cost_ledger entry OR have been health-checked
+          // (i.e. their status is not 'unknown'). "total" = all registered services.
+          const cov = await c.env.DB.prepare(`
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN s.status != 'unknown' OR cl.cnt > 0 THEN 1 ELSE 0 END) AS covered
+            FROM services s
+            LEFT JOIN (
+              SELECT feature, COUNT(*) AS cnt FROM cost_ledger GROUP BY feature
+            ) cl ON cl.feature = s.name
+          `).first<{ total: number; covered: number }>();
+          return { covered: cov?.covered ?? 0, total: cov?.total ?? 0 };
+        })(),
       },
     });
   } catch { return c.json({ error: "internal_error" }, 500); }

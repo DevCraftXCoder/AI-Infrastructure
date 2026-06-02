@@ -155,7 +155,7 @@ function classify(statusCode: number | null, latency: number, ok: boolean): Serv
   return "healthy";
 }
 
-async function pingOne(env: Env, svc: Service): Promise<void> {
+async function pingOne(env: Env, svc: Service, ctx: ExecutionContext): Promise<void> {
   const t0 = Date.now();
   let statusCode: number | null = null;
   let ok = false;
@@ -173,22 +173,25 @@ async function pingOne(env: Env, svc: Service): Promise<void> {
       org: svc.org, project: svc.project, service_id: svc.id, kind: "status_change",
       message: `${svc.name} ${svc.status} → ${next}`, detail: JSON.stringify({ from: svc.status, to: next }),
     });
-    // Discord alert: only fire on transitions INTO down or degraded (not out of them)
+    // Discord alert: only fire on transitions INTO down or degraded (not out of them).
+    // Wrapped in ctx.waitUntil so it survives even if the health sweep completes quickly.
     if ((next === "down" || next === "degraded") && env.DISCORD_WEBHOOK_URL) {
       const emoji = next === "down" ? "🔴" : "🟡";
-      fetch(env.DISCORD_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          embeds: [{
-            title: `${emoji} ${svc.name} is ${next}`,
-            description: `**${svc.org} / ${svc.project}** — ${svc.region}\nPrevious: **${svc.status}** → Now: **${next}**${ok ? `\nLatency: ${latency}ms  Status code: ${statusCode}` : "\nFailed to connect"}`,
-            color: next === "down" ? 0xe94560 : 0xd29922,
-            timestamp: new Date(now).toISOString(),
-          }],
-        }),
-        signal: AbortSignal.timeout(4000),
-      }).catch(() => {});
+      ctx.waitUntil(
+        fetch(env.DISCORD_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            embeds: [{
+              title: `${emoji} ${svc.name} is ${next}`,
+              description: `**${svc.org} / ${svc.project}** — ${svc.region}\nPrevious: **${svc.status}** → Now: **${next}**${ok ? `\nLatency: ${latency}ms  Status code: ${statusCode}` : "\nFailed to connect"}`,
+              color: next === "down" ? 0xe94560 : 0xd29922,
+              timestamp: new Date(now).toISOString(),
+            }],
+          }),
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => {})
+      );
     }
   }
 
@@ -235,10 +238,14 @@ export async function ingestEvent(env: Env, input: { org: string; project?: stri
   await logActivity(env, { org: input.org, project: input.project ?? null, service_id: serviceId, kind: input.kind, message: input.message, detail: input.detail ?? null });
 }
 
-/** Pings every service with a public health URL. Returns how many were checked. */
-export async function runHealthChecks(env: Env): Promise<number> {
+/** Pings every service with a public health URL. Returns how many were checked.
+ *  `ctx` is optional — pass it from the scheduled handler so Discord alerts are
+ *  wrapped in waitUntil. The manual /api/control/health-check route omits it. */
+export async function runHealthChecks(env: Env, ctx?: ExecutionContext): Promise<number> {
   const r = await env.DB.prepare("SELECT * FROM services WHERE url IS NOT NULL").all<Service>();
   const targets = (r.results ?? []).filter(s => pingable(s.url));
-  await Promise.allSettled(targets.map(s => pingOne(env, s)));
+  // Build a no-op ctx shim when called without an ExecutionContext (manual HTTP trigger).
+  const safeCtx = ctx ?? { waitUntil: (p: Promise<unknown>) => { p.catch(() => {}); }, passThroughOnException: () => {} } as unknown as ExecutionContext;
+  await Promise.allSettled(targets.map(s => pingOne(env, s, safeCtx)));
   return targets.length;
 }

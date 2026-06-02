@@ -34,9 +34,9 @@ INSERT OR IGNORE INTO services (id, org, project, region, name, kind, url, statu
   ('svc_fn_web', '3Sixty Co.', 'Finos', 'global', 'finos-web', 'worker', 'https://finos-web.frxncois.workers.dev', 'healthy', 134, 'v0.1.0', 1780000000000, 1780000000000, 1780000000000),
   ('svc_fn_api', '3Sixty Co.', 'Finos', 'global', 'finos-api', 'worker', 'https://finos-api.frxncois.workers.dev/health', 'healthy', 79, 'v0.1.0', 1780000000000, 1780000000000, 1780000000000);
 
--- AI Gateway (this worker)
+-- AI Gateway (this worker — self-registers with its own /health endpoint so the sweep probes it)
 INSERT OR IGNORE INTO services (id, org, project, region, name, kind, url, status, latency_ms, version, last_check, created_at, updated_at) VALUES
-  ('svc_ai_gateway', '3Sixty Co.', 'AI Gateway', 'global', 'ai-gateway', 'worker', NULL, 'healthy', NULL, 'v1.0.0', 1780000000000, 1780000000000, 1780000000000);
+  ('svc_ai_gateway', '3Sixty Co.', 'AI Gateway', 'global', 'ai-gateway', 'worker', 'https://ai-gateway.frxncois.workers.dev/health', 'healthy', NULL, 'v1.0.0', 1780000000000, 1780000000000, 1780000000000);
 
 -- Seed activity feed
 INSERT OR IGNORE INTO activity (id, org, project, service_id, kind, message, detail, created_at) VALUES
