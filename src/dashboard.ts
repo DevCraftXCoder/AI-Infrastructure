@@ -635,6 +635,7 @@ const PAGE = `<!doctype html>
           <div style="flex:1"><div style="font-weight:600;font-size:14px" id="aIdentity">Loading…</div><div style="font-size:11px;color:var(--muted);margin-top:2px">Online · Region</div></div>
           <div class="risk-ring"><div class="rv" id="aRiskVal">—</div><div class="rl">RISK</div></div>
         </div>
+        <div class="kv-row"><span class="k">SESSION STATUS</span><span id="aSessState" class="badge warn">—</span></div>
         <div class="kv-row"><span class="k">EFFECTIVE ROLE</span><span id="aRole" class="badge admin">—</span></div>
         <div class="kv-row"><span class="k">ACTOR</span><span class="v" id="aActorName">—</span></div>
         <div class="kv-row"><span class="k">SESSION EXPIRES</span><span class="v" id="aExpiry" style="font-family:'JetBrains Mono',monospace;font-size:12px">—</span></div>
@@ -645,6 +646,7 @@ const PAGE = `<!doctype html>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
           <button class="btn" onclick="renewSession()">Renew Session</button>
           <button class="btn" onclick="extendSession()">Extend Session</button>
+          <button class="btn ghost" onclick="setGatewayKey()">Set Gateway Key</button>
           <button class="btn danger" onclick="forceLogout()">Force Logout</button>
         </div>
         <div id="aSessErr" style="display:none;margin-top:10px;font-size:12px;color:var(--down);background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.25);border-radius:6px;padding:8px 10px"></div>
@@ -771,12 +773,26 @@ function sessErr(msg){var el=$('aSessErr');if(!el)return;el.style.display='';el.
 function sessInfo(msg){var el=$('aSessErr');if(!el)return;el.style.display='';el.style.color='var(--muted)';el.style.borderColor='var(--border)';el.style.background='var(--panel2)';txt(el,msg)}
 function clearSessErr(){var el=$('aSessErr');if(el)el.style.display='none'}
 function renderSession(d){if(!d)return;txt($('aIdentity'),d.identity||'Unknown');txt($('aActorName'),d.actor||'—');txt($('aProvider'),d.auth_provider||'—');txt($('aRiskVal'),d.access_risk_score||'—');var roleEl=$('aRole');txt(roleEl,d.role||'viewer');roleEl.className='badge '+(d.role||'viewer');var mfaEl=$('aMfa');var mfaBanner=$('mfaBanner');if(d.mfa_status==='missing'){mfaEl.className='badge down';txt(mfaEl,'⚠ NO MFA SIGNAL');if(mfaBanner)mfaBanner.style.display=''}else if(d.mfa_status==='verified'){mfaEl.className='badge ok';txt(mfaEl,'✓ VERIFIED');if(mfaBanner)mfaBanner.style.display='none'}else{mfaEl.className='badge warn';txt(mfaEl,'UNKNOWN')}
-var state=d.session_state||(d.session_expires_at&&d.session_expires_at>Date.now()?'active':'expired');var expEl=$('aExpiry');var idEl=$('aIdle');
-if(state==='active'){if(expEl){expEl.style.color='';txt(expEl,fmt(d.session_expires_at))}if(idEl){idEl.style.color='';txt(idEl,'Idle: '+(d.idle_minutes||0)+'m')}clearSessErr()}
-else if(state==='unauthenticated'||state==='no_session'){var noKey=!gk;if(expEl){expEl.style.color='var(--down)';txt(expEl,'No active session')}if(idEl){idEl.style.color='';txt(idEl,'—')}if(noKey){sessErr('No gateway key. Enter key via Extend Session to start a session.')}else{sessInfo('Key present but no active session. Click Extend Session to start one.')}}
-else if(state==='idle'){if(expEl){expEl.style.color='var(--warn,#d29922)';txt(expEl,fmt(d.session_expires_at))}if(idEl){idEl.style.color='var(--warn,#d29922)';txt(idEl,'Idle: '+(d.idle_minutes||0)+'m — session will expire soon')}sessInfo('Session idle for '+(d.idle_minutes||0)+'m. Click Extend Session to stay active.')}
-else{if(expEl){expEl.style.color='var(--down)';txt(expEl,'Expired — '+fmt(d.session_expires_at))}if(idEl){idEl.style.color='var(--down)';txt(idEl,'Idle: '+(d.idle_minutes||0)+'m (timed out)')}sessInfo('Session expired (idle/timeout). Click Extend Session to start a new one.')}}
-function loadAccess(){var headers=gk?{'Authorization':'Bearer '+gk}:{};fetch('/api/control/access/session',{headers:headers}).then(function(r){return r.json()}).then(function(d){renderSession(d)}).catch(function(){});renderPermMatrix()}
+var state=d.session_state||(d.session_expires_at&&d.session_expires_at>Date.now()?'active':'expired');var expEl=$('aExpiry');var idEl=$('aIdle');var stEl=$('aSessState');
+if(state==='active'){if(stEl){stEl.className='badge ok';txt(stEl,'● SESSION ACTIVE')}if(expEl){expEl.style.color='var(--healthy,#3fb950)';txt(expEl,fmt(d.session_expires_at))}if(idEl){idEl.style.color='';txt(idEl,'Idle: '+(d.idle_minutes||0)+'m')}clearSessErr()}
+else if(state==='unauthenticated'||state==='no_session'){if(stEl){stEl.className='badge down';txt(stEl,'✗ NO SESSION')}var noKey=!gk;if(expEl){expEl.style.color='var(--muted)';txt(expEl,'—')}if(idEl){idEl.style.color='';txt(idEl,'—')}if(noKey){sessErr('No gateway key set. Click "Set Gateway Key" to authenticate.')}else{sessInfo('Starting session…')}}
+else if(state==='idle'){if(stEl){stEl.className='badge warn';txt(stEl,'⚠ IDLE')}if(expEl){expEl.style.color='var(--warn,#d29922)';txt(expEl,fmt(d.session_expires_at))}if(idEl){idEl.style.color='var(--warn,#d29922)';txt(idEl,'Idle: '+(d.idle_minutes||0)+'m — session will expire soon')}sessInfo('Session idle for '+(d.idle_minutes||0)+'m. Click Extend Session to stay active.')}
+else{if(stEl){stEl.className='badge down';txt(stEl,'✗ EXPIRED')}if(expEl){expEl.style.color='var(--down)';txt(expEl,'Expired — '+fmt(d.session_expires_at))}if(idEl){idEl.style.color='var(--down)';txt(idEl,'Idle: '+(d.idle_minutes||0)+'m (timed out)')}sessInfo('Session expired. Click Extend Session to start a new one.')}}
+var _autoExtendPending=false;
+function loadAccess(){var headers=gk?{'Authorization':'Bearer '+gk}:{};fetch('/api/control/access/session',{headers:headers}).then(function(r){return r.json()}).then(function(d){
+  var state=d&&d.session_state;
+  // Auto-extend: if we have a key but no active session, silently start one on first load.
+  if(gk&&(state==='no_session'||state==='unauthenticated')&&!_autoExtendPending){
+    _autoExtendPending=true;
+    authed('POST','/api/control/access/extend-session').then(function(r){
+      _autoExtendPending=false;
+      if(r&&r.ok){clearSessErr();loadAccess();}
+      else{renderSession(d);}
+    }).catch(function(){_autoExtendPending=false;renderSession(d);});
+    return;
+  }
+  renderSession(d);
+}).catch(function(){});renderPermMatrix()}
 function startSessPoll(){stopSessPoll();sessTimer=setInterval(function(){var ac=$('atab-access');var tab=$('tab-access');if((ac&&ac.style.display!=='none')&&(tab&&tab.style.display!=='none')){loadAccess()}},60000)}
 function stopSessPoll(){if(sessTimer){clearInterval(sessTimer);sessTimer=null}}
 var PERMS=[{section:'Viewer Permissions'},{name:'Status',desc:'Read service status and registry data.',req:'Viewer',v:true,o:true,a:true},{name:'Metrics',desc:'Read live infra metrics and health checks.',req:'Viewer',v:true,o:true,a:true},{name:'Traces',desc:'Read request traces and diagnostic spans.',req:'Viewer',v:true,o:true,a:true},{name:'Audit log',desc:'Read access-control and infra audit entries.',req:'Viewer',v:true,o:true,a:true},{section:'Operator Permissions'},{name:'Restart',desc:'Restart managed services through infra controls.',req:'Operator',v:false,o:true,a:true},{name:'Rollback',desc:'Trigger guarded deploy rollback requests.',req:'Operator',v:false,o:true,a:true},{name:'Metrics ingest',desc:'Write service metric samples.',req:'Operator',v:false,o:true,a:true},{name:'Trace ingest',desc:'Write service trace events.',req:'Operator',v:false,o:true,a:true},{section:'Admin Permissions'},{name:'Config write',desc:'Change guarded infra configuration.',req:'Admin',v:false,o:false,a:true},{name:'Tokens',desc:'Issue and revoke service tokens.',req:'Admin',v:false,o:false,a:true},{name:'Delete services',desc:'Remove services from registry.',req:'Admin',v:false,o:false,a:true},{name:'Incident manage',desc:'Create, update, delete incidents.',req:'Admin',v:false,o:false,a:true}];
@@ -784,6 +800,7 @@ function renderPermMatrix(filter){var tb=$('permBody');if(!tb)return;tb.innerHTM
 function filterPerms(){renderPermMatrix(($('permFilter')||{}).value||'')}
 function exportPermCsv(){var rows=[['Permission','Viewer','Operator','Admin']];PERMS.filter(function(p){return !p.section}).forEach(function(p){rows.push([p.name,p.v?'granted':'off',p.o?'granted':'off',p.a?'granted':'off'])});var csv=rows.map(function(r){return r.map(function(v){return'"'+v+'"'}).join(',')}).join('\n');var a=document.createElement('a');a.href='data:text/csv,'+encodeURIComponent(csv);a.download='permissions.csv';a.click()}
 function copySession(){var info='Actor: '+(($('aActorName')||{}).textContent||'')+'\nRole: '+(($('aRole')||{}).textContent||'')+'\nMFA: '+(($('aMfa')||{}).textContent||'')+'\nExpiry: '+(($('aExpiry')||{}).textContent||'');navigator.clipboard.writeText(info).catch(function(){})}
+function setGatewayKey(){if(promptKey()){_autoExtendPending=false;loadAccess();}}
 function extendSession(retried){if(!gk){if(!promptKey())return}authed('POST','/api/control/access/extend-session').then(function(d){if(d&&d.ok){clearSessErr();loadAccess()}else if(d&&(d.error==='unauthorized'||d.error==='token_expired')&&!retried){if(promptKey())extendSession(true);else sessErr('Failed to extend session — gateway key required.')}else{sessErr('Failed to extend session'+(d&&d.error?' — '+d.error:'.'))}}).catch(function(){sessErr('Failed to extend session — network error.')})}
 function renewSession(retried){if(!gk){if(!promptKey())return}authed('POST','/api/control/access/renew-session').then(function(d){if(d&&d.ok){clearSessErr();loadAccess()}else if(d&&(d.error==='unauthorized'||d.error==='token_expired')&&!retried){if(promptKey())renewSession(true);else sessErr('Failed to renew session — gateway key required.')}else{sessErr('Failed to renew session'+(d&&d.error?' — '+d.error:'.'))}}).catch(function(){sessErr('Failed to renew session — network error.')})}
 function forceLogout(){if(!confirm('Force logout this session?'))return;if(!gk){promptKey();return}authed('POST','/api/control/access/logout').then(function(d){if(d&&d.ok){sessInfo('Session invalidated. Click Renew Session to start a new one.');loadAccess()}else{sessErr('Failed to log out'+(d&&d.error?' — '+d.error:'.'))}}).catch(function(){sessErr('Failed to log out — network error.')})}
