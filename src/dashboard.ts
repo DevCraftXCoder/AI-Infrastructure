@@ -284,9 +284,16 @@ dash.post("/api/control/health-check", verifyAuth, async (c) => {
 dash.route("/", extra);
 
 // ---- served dashboard --------------------------------------------------
+// no-store: the dashboard HTML is an inline build artifact that changes on
+// every deploy. Without this, browsers heuristic-cache it and keep rendering
+// the previous build's UI (stale font, old banners) across deploys.
+const HTML_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+  Pragma: "no-cache",
+} as const;
 
-dash.get("/", (c) => c.html(PAGE));
-dash.get("/dashboard", (c) => c.html(PAGE));
+dash.get("/", (c) => c.html(PAGE, 200, HTML_HEADERS));
+dash.get("/dashboard", (c) => c.html(PAGE, 200, HTML_HEADERS));
 
 export default dash;
 
