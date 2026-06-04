@@ -137,18 +137,19 @@ dash.get("/api/control/overview", async (c) => {
   try {
     const orgs = await listOrgs(c.env);
     const f = readFilter(c);
-    const org = f.org && orgs.includes(f.org) ? f.org : orgs[0];
-    if (!org) return c.json({ orgs, projects: [], regions: [], services: [], summary: summarize([]), filters: { ...f } });
+    // When no org is specified (or ALL), show aggregate across all orgs
+    const org = (f.org && f.org !== ALL && orgs.includes(f.org)) ? f.org : undefined;
+    if (orgs.length === 0) return c.json({ orgs, projects: [], regions: [], services: [], summary: summarize([]), filters: { org: ALL, project: ALL, region: ALL, status: f.status ?? ALL, q: f.q ?? "" } });
 
-    const projects = await listProjects(c.env, org);
-    const project = f.project && (f.project === ALL || projects.includes(f.project)) ? f.project : ALL;
-    const regions = await listRegions(c.env, org, project);
-    const region = f.region && (f.region === ALL || regions.includes(f.region)) ? f.region : ALL;
+    const projects = org ? await listProjects(c.env, org) : [];
+    const project = (f.project && f.project !== ALL && projects.includes(f.project)) ? f.project : ALL;
+    const regions = org ? await listRegions(c.env, org, project) : [];
+    const region = (f.region && f.region !== ALL && regions.includes(f.region)) ? f.region : ALL;
 
-    const services = await listServices(c.env, { org, project, region, status: f.status, q: f.q });
+    const services = await listServices(c.env, { org, project: project !== ALL ? project : undefined, region: region !== ALL ? region : undefined, status: f.status, q: f.q });
     return c.json({
       orgs, projects, regions,
-      filters: { org, project, region, status: f.status ?? ALL, q: f.q ?? "" },
+      filters: { org: org ?? ALL, project, region, status: f.status ?? ALL, q: f.q ?? "" },
       services,
       summary: summarize(services),
     });
@@ -326,7 +327,11 @@ const PAGE = `<!doctype html>
   .nav-item.active{background:var(--accent-bg);color:var(--accent);font-weight:500}
   .nav-item .icon{width:16px;text-align:center;font-style:normal;flex-shrink:0;font-size:13px}
   .nav-badge{margin-left:auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;background:var(--accent);color:#fff}
-  .topbar-title{font-family:'DM Sans';font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .topbar-tab-badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;letter-spacing:.1em;padding:3px 10px;border-radius:999px;text-transform:uppercase;background:rgba(63,185,80,.12);color:var(--healthy);flex-shrink:0;border:1px solid rgba(63,185,80,.2)}
+  .topbar-crumb{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+  .topbar-sep{width:1px;height:18px;background:var(--border2);flex-shrink:0}
+  .topbar-filter-grp{display:flex;align-items:center;gap:5px;flex-shrink:0}
+  .topbar-filter-lbl{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700;white-space:nowrap}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
   .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px}
   .seg button{background:transparent;border:none;color:var(--muted);padding:5px 13px;border-radius:999px;font:inherit;font-size:12px;cursor:pointer}
@@ -559,11 +564,21 @@ const PAGE = `<!doctype html>
 </nav>
 <div class="main">
 <div class="topbar">
-  <span class="topbar-title" id="topTitle">OVERVIEW</span>
-  <span style="color:var(--border2)">·</span>
-  <select class="topbar-sel" id="orgSel"></select>
-  <select class="topbar-sel" id="projSel"></select>
-  <select class="topbar-sel" id="regionSel"></select>
+  <span class="topbar-tab-badge" id="topTitle">OVERVIEW</span>
+  <span id="topBreadcrumb" class="topbar-crumb">All Orgs / All Projects</span>
+  <div class="topbar-sep"></div>
+  <div class="topbar-filter-grp">
+    <span class="topbar-filter-lbl">Org</span>
+    <select class="topbar-sel" id="orgSel" autocomplete="off"></select>
+  </div>
+  <div class="topbar-filter-grp">
+    <span class="topbar-filter-lbl">Project</span>
+    <select class="topbar-sel" id="projSel" autocomplete="off"></select>
+  </div>
+  <div class="topbar-filter-grp">
+    <span class="topbar-filter-lbl">Region</span>
+    <select class="topbar-sel" id="regionSel" autocomplete="off"></select>
+  </div>
   <div class="topbar-right">
     <span class="fresh" id="fresh"></span>
     <button class="btn ghost" id="refreshBtn">↺ Refresh</button>
@@ -850,10 +865,10 @@ var st={org:'',project:ALL,region:ALL,status:ALL,q:'',view:'comfortable',service
 var allLogs=[];
 var logTimer=null;var logCountdownTimer=null;var logCountdownSec=30;
 var TAB_TITLES={overview:'OVERVIEW',services:'SERVICES',incidents:'INCIDENTS',observability:'OBSERVABILITY',logs:'LOGS',deploys:'DEPLOYS',access:'ACCESS'};
-function nav(el){if(!el)return;var tab=el.getAttribute('data-tab');if(!tab)return;document.querySelectorAll('.nav-item').forEach(function(n){n.classList.toggle('active',n===el)});document.querySelectorAll('[id^="tab-"]').forEach(function(t){t.style.display='none'});var panel=$('tab-'+tab);if(panel)panel.style.display='';txt($('topTitle'),TAB_TITLES[tab]||tab.toUpperCase());if(tab==='incidents')loadIncidents();if(tab==='observability'){loadObs();startObsCd();}else stopObsCd();if(tab==='logs'){startLogPoll();loadLogs();}else stopLogPoll();if(tab==='deploys')loadActivity();if(tab==='access'){loadAccess();startSessPoll();}else{stopSessPoll();}}
+function nav(el){if(!el)return;var tab=el.getAttribute('data-tab');if(!tab)return;document.querySelectorAll('.nav-item').forEach(function(n){n.classList.toggle('active',n===el)});document.querySelectorAll('[id^="tab-"]').forEach(function(t){t.style.display='none'});var panel=$('tab-'+tab);if(panel)panel.style.display='';var tb=$('topTitle');txt(tb,TAB_TITLES[tab]||tab.toUpperCase());var filterTabs=new Set(['overview','services']);var crumb=$('topBreadcrumb');if(crumb)crumb.style.display=filterTabs.has(tab)?'':'none';if(tb){tb.style.background=tab==='overview'?'rgba(63,185,80,.12)':tab==='incidents'?'rgba(233,69,96,.12)':tab==='observability'?'rgba(124,158,247,.12)':'rgba(110,118,129,.14)';tb.style.color=tab==='overview'?'var(--healthy)':tab==='incidents'?'var(--down)':tab==='observability'?'#7c9ef7':'var(--muted)';tb.style.borderColor=tab==='overview'?'rgba(63,185,80,.2)':tab==='incidents'?'rgba(233,69,96,.2)':tab==='observability'?'rgba(124,158,247,.2)':'rgba(110,118,129,.2)'}if(tab==='incidents')loadIncidents();if(tab==='observability'){loadObs();startObsCd();}else stopObsCd();if(tab==='logs'){startLogPoll();loadLogs();}else stopLogPoll();if(tab==='deploys')loadActivity();if(tab==='access'){loadAccess();startSessPoll();}else{stopSessPoll();}}
 function qsInit(){var p=new URLSearchParams(location.search);if(p.get('org'))st.org=p.get('org');if(p.get('project'))st.project=p.get('project');if(p.get('region'))st.region=p.get('region')}
 function opt(val,label,sel){var o=document.createElement('option');o.value=val;o.textContent=label;if(val===sel)o.selected=true;return o}
-function fillSelects(d){var orgs=Array.isArray(d.orgs)?d.orgs:[];var projects=Array.isArray(d.projects)?d.projects:[];var regions=Array.isArray(d.regions)?d.regions:[];var f=d.filters||{};var os=$('orgSel');os.innerHTML='';orgs.forEach(function(o){os.appendChild(opt(o,o,f.org))});var ps=$('projSel');ps.innerHTML='';ps.appendChild(opt(ALL,'All Projects',f.project));projects.forEach(function(p){ps.appendChild(opt(p,p,f.project))});var rs=$('regionSel');rs.innerHTML='';rs.appendChild(opt(ALL,'All Regions',f.region));regions.forEach(function(r){rs.appendChild(opt(r,r,f.region))})}
+function fillSelects(d){var orgs=Array.isArray(d.orgs)?d.orgs:[];var projects=Array.isArray(d.projects)?d.projects:[];var regions=Array.isArray(d.regions)?d.regions:[];var f=d.filters||{};var os=$('orgSel');os.innerHTML='';os.appendChild(opt(ALL,'All Orgs',f.org||ALL));orgs.forEach(function(o){os.appendChild(opt(o,o,f.org))});var ps=$('projSel');ps.innerHTML='';ps.appendChild(opt(ALL,'All Projects',f.project));projects.forEach(function(p){ps.appendChild(opt(p,p,f.project))});var rs=$('regionSel');rs.innerHTML='';rs.appendChild(opt(ALL,'All Regions',f.region));regions.forEach(function(r){rs.appendChild(opt(r,r,f.region))});var orgLabel=(f.org&&f.org!==ALL)?f.org:'All Orgs';var projLabel=(f.project&&f.project!==ALL)?f.project:'All Projects';txt($('topBreadcrumb'),orgLabel+' / '+projLabel)}
 $('orgSel').onchange=function(){st.org=this.value;st.project=ALL;st.region=ALL;load()};
 $('projSel').onchange=function(){st.project=this.value;st.region=ALL;load()};
 $('regionSel').onchange=function(){st.region=this.value;load()};
@@ -862,7 +877,7 @@ function renderBody(){var b=$('body');b.innerHTML='';if(!Array.isArray(st.servic
 function renderSvcBody(){var b=$('svcBody');if(!b)return;b.innerHTML='';var svcs=st.services.filter(function(s){if(st.status&&st.status!==ALL&&s.status!==st.status)return false;if(st.q&&!(s.name+s.project+s.kind).toLowerCase().includes(st.q.toLowerCase()))return false;return true});if(!svcs.length){b.innerHTML='<div class="panel empty">No matching services.</div>';return}if(st.view==='ops'){renderOps(b,svcs);return}var g=document.createElement('div');g.className='grid-cards';svcs.forEach(function(s){var c=document.createElement('div');c.className='panel svc-card';c.onclick=function(){openService(s.id)};c.innerHTML='<div class="top"><div class="nm">'+s.name+'</div><span class="badge '+s.status+'">'+s.status+'</span></div><div class="meta"><span>'+s.project+'</span><span>'+s.region+'</span>'+(s.latency_ms!=null?'<span>'+s.latency_ms+'ms</span>':'')+'</div>';g.appendChild(c)});b.appendChild(g)}
 function renderOps(b,svcs){var wrap=document.createElement('div');wrap.className='panel';wrap.style.overflowX='auto';var t=document.createElement('table');t.className='tbl';t.innerHTML='<thead><tr><th>Service</th><th>Project</th><th>Region</th><th>Status</th><th>Latency</th><th>Version</th><th>Checked</th></tr></thead>';var tb=document.createElement('tbody');(svcs||st.services).forEach(function(s){var r=document.createElement('tr');r.onclick=function(){openService(s.id)};r.innerHTML='<td>'+s.name+'</td><td>'+s.project+'</td><td>'+s.region+'</td><td><span class="badge '+s.status+'">'+s.status+'</span></td><td class="mono">'+(s.latency_ms!=null?s.latency_ms+'ms':'—')+'</td><td class="mono">'+(s.version||'—')+'</td><td>'+ago(s.last_check)+'</td>';tb.appendChild(r)});t.appendChild(tb);wrap.appendChild(t);b.appendChild(wrap)}
 function setView(btn){document.querySelectorAll('#viewSeg button').forEach(function(b){b.classList.toggle('active',b===btn)});st.view=btn.getAttribute('data-v')||'comfortable';var appEl=document.querySelector('.app');if(appEl)appEl.classList.toggle('compact',st.view==='compact');renderBody();renderSvcBody()}
-function load(){var p=new URLSearchParams();if(st.org)p.set('org',st.org);p.set('project',st.project);p.set('region',st.region);if(st.status&&st.status!==ALL)p.set('status',st.status);if(st.q)p.set('q',st.q);return api('/api/control/overview?'+p).then(function(d){if(!d||d.error)return;var f=d.filters||{};st.org=f.org||st.org;st.project=f.project||ALL;st.region=f.region||ALL;st.services=Array.isArray(d.services)?d.services:[];st.summary=d.summary||{};st.lastLoad=Date.now();fillSelects(d);renderSummary(st.summary);renderBody();renderSvcBody();updateFresh();var downs=st.services.filter(function(s){return s.status==='down'||s.status==='degraded'});if(downs.length){$('ovIncBanner').style.display='';txt($('ovIncText'),downs.length+' service(s) degraded or down: '+downs.slice(0,3).map(function(s){return s.name}).join(', '))}else $('ovIncBanner').style.display='none';loadStats()})}
+function load(){var p=new URLSearchParams();if(st.org&&st.org!==ALL)p.set('org',st.org);if(st.project&&st.project!==ALL)p.set('project',st.project);if(st.region&&st.region!==ALL)p.set('region',st.region);if(st.status&&st.status!==ALL)p.set('status',st.status);if(st.q)p.set('q',st.q);return api('/api/control/overview?'+p).then(function(d){if(!d||d.error){updateFresh();return}var f=d.filters||{};st.org=f.org||ALL;st.project=f.project||ALL;st.region=f.region||ALL;st.services=Array.isArray(d.services)?d.services:[];st.summary=d.summary||{};st.lastLoad=Date.now();fillSelects(d);renderSummary(st.summary);renderBody();renderSvcBody();updateFresh();var downs=st.services.filter(function(s){return s.status==='down'||s.status==='degraded'});if(downs.length){$('ovIncBanner').style.display='';txt($('ovIncText'),downs.length+' service(s) degraded or down: '+downs.slice(0,3).map(function(s){return s.name}).join(', '))}else $('ovIncBanner').style.display='none';loadStats()})}
 function updateFresh(){txt($('fresh'),'updated '+ago(st.lastLoad))}
 function loadStats(){api('/api/control/stats?window=86400000').then(function(d){if(!d||d.error)return;var t=d.totals||{};var box=$('gwStats');box.innerHTML='';[{n:t.total_requests||0,k:'Requests (24h)'},{n:(t.error_rate||0)+'%',k:'Error Rate'},{n:t.avg_latency_ms!=null?Math.round(t.avg_latency_ms)+'ms':'—',k:'Avg Latency'},{n:(t.cache_hit_rate||0)+'%',k:'Cache Hit'},{n:(t.total_input_tokens||0).toLocaleString(),k:'Input Tokens'},{n:(t.fallback_rate||0)+'%',k:'Fallback Rate'}].forEach(function(c){var el=document.createElement('div');el.className='stat-tile panel';el.innerHTML='<div class="val">'+c.n+'</div><div class="lbl">'+c.k+'</div>';box.appendChild(el)});var tb=$('featureTbody');tb.innerHTML='';var fs=Array.isArray(d.by_feature)?d.by_feature:[];if(!fs.length){tb.innerHTML='<tr><td colspan="7" style="color:var(--muted);padding:20px;text-align:center">No gateway requests in window</td></tr>';return}fs.forEach(function(f){tb.innerHTML+='<tr><td>'+f.feature+'</td><td>'+f.total+'</td><td>'+f.error_rate+'%</td><td class="mono">'+(f.avg_latency!=null?Math.round(f.avg_latency)+'ms':'—')+'</td><td>'+f.cache_hit_rate+'%</td><td class="mono">'+(f.input_tokens||0).toLocaleString()+'</td><td>'+f.fallback_rate+'%</td></tr>'})}).catch(function(){})}
 function loadIncidents(){var org=st.org;var status=($('incStatusSel')||{}).value||ALL;var p=new URLSearchParams();if(org)p.set('org',org);if(status&&status!==ALL)p.set('status',status);authed('GET','/api/control/incidents?'+p).then(function(d){if(!d||d.error)return;var incs=Array.isArray(d.incidents)?d.incidents:[];var stats=d.stats||{};txt($('iOpen'),stats.open||0);txt($('iCrit'),stats.critical||0);var aff=incs.reduce(function(a,i){return a+(i.affected_users||0)},0);txt($('iAffected'),aff>0?aff.toLocaleString():'—');var sla=incs.filter(function(i){return i.sla_breached}).length;txt($('iSla'),sla);var nb=$('incBadge');if(nb){if(stats.open>0){nb.style.display='';txt(nb,stats.open)}else nb.style.display='none'}var list=$('incList');list.innerHTML='';if(!incs.length){list.innerHTML='<div class="panel empty"><div>No incidents.</div><div class="hint">Click + New Incident to create one.</div></div>';return}incs.forEach(function(i){var sev=(i.severity||'P2').toLowerCase();var card=document.createElement('div');card.className='panel inc-card '+sev;var slaBadge=i.sla_breached?'<span class="badge sla">SLA BREACHED</span>':'';var affBadge=i.affected_users?'<span style="font-size:12px;color:var(--muted)">impacted users: '+i.affected_users+'</span>':'';card.innerHTML='<div class="inc-top"><span class="badge '+sev+'">'+i.severity+'</span><span class="inc-title">'+i.title+'</span>'+slaBadge+'<span class="badge '+(i.status==='resolved'?'ok':'warn')+'">'+i.status.replace('_',' ')+'</span></div><div class="inc-meta">'+affBadge+'<span>'+ago(i.created_at)+'</span>'+(i.project?'<span>'+i.project+'</span>':'')+'</div>';card.onclick=function(){openIncidentDrawer(i)};list.appendChild(card)})}).catch(function(){})}
