@@ -322,9 +322,9 @@ const PAGE = `<!doctype html>
   .mono{font-family:'JetBrains Mono',monospace}
   a{color:var(--accent);text-decoration:none}
   .app{display:flex;height:100vh;overflow:hidden}
-  .sidebar{width:var(--sidebar);min-width:var(--sidebar);background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
-  .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
-  .topbar{padding:0 20px;height:52px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0;background:var(--panel)}
+  .sidebar{width:var(--sidebar);min-width:var(--sidebar);background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{padding:0 16px;height:52px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;background:var(--panel);overflow:hidden;min-width:0}
   .content{flex:1;overflow-y:auto;padding:20px}
   .sidebar-logo{padding:16px 14px 10px;border-bottom:1px solid var(--border)}
   .sidebar-logo .name{font-family:'DM Sans';font-size:13px;font-weight:700;letter-spacing:.04em}
@@ -337,15 +337,15 @@ const PAGE = `<!doctype html>
   .nav-item .icon{width:16px;text-align:center;font-style:normal;flex-shrink:0;font-size:13px}
   .nav-badge{margin-left:auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:999px;background:var(--accent);color:#fff}
   .topbar-tab-badge{display:inline-flex;align-items:center;font-size:10px;font-weight:700;letter-spacing:.1em;padding:3px 10px;border-radius:999px;text-transform:uppercase;background:rgba(63,185,80,.12);color:var(--healthy);flex-shrink:0;border:1px solid rgba(63,185,80,.2)}
-  .topbar-crumb{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+  .topbar-crumb{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:180px;flex-shrink:1}
   .topbar-sep{width:1px;height:18px;background:var(--border2);flex-shrink:0}
-  .topbar-filter-grp{display:flex;align-items:center;gap:5px;flex-shrink:0}
+  .topbar-filter-grp{display:flex;align-items:center;gap:4px;flex-shrink:1;min-width:0}
   .topbar-filter-lbl{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700;white-space:nowrap}
-  .topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .topbar-right{margin-left:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
   .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px}
   .seg button{background:transparent;border:none;color:var(--muted);padding:5px 13px;border-radius:999px;font:inherit;font-size:12px;cursor:pointer}
   .seg button.active{background:var(--accent-bg);color:var(--accent);font-weight:500}
-  .topbar-sel{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font:inherit;font-size:12px;cursor:pointer}
+  .topbar-sel{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:5px 8px;font:inherit;font-size:12px;cursor:pointer;max-width:120px;min-width:0}
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--r)}
   .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px}
   .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
