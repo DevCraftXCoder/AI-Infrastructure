@@ -326,7 +326,7 @@ const PAGE = `<!doctype html>
   .main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
   .topbar{padding:0 16px;height:52px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;background:var(--panel);overflow:hidden;min-width:0}
   .content{flex:1;overflow-y:auto;padding:20px}
-  .sidebar-logo{padding:16px 14px 10px;border-bottom:1px solid var(--border)}
+  .sidebar-logo{height:52px;padding:0 14px;display:flex;flex-direction:column;justify-content:center;border-bottom:1px solid var(--border)}
   .sidebar-logo .name{font-family:'DM Sans';font-size:13px;font-weight:700;letter-spacing:.04em}
   .sidebar-logo .sub{font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-top:1px}
   .nav-section{padding:10px 10px 4px}
@@ -548,6 +548,27 @@ const PAGE = `<!doctype html>
   @media(max-width:900px){.obs-layout{grid-template-columns:1fr}}
   @media(max-width:640px){.sidebar{display:none}.log-row{grid-template-columns:90px 36px 80px 60px 1fr}.inc-stats{grid-template-columns:repeat(2,1fr)}}
   @media(prefers-reduced-motion:reduce){.drawer,.scrim,.modal-bg,.badge.live{transition:none;animation:none}}
+  .ai-wrap{display:flex;flex-direction:column;height:calc(100vh - 52px)}
+  .ai-messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:10px;min-height:0}
+  .ai-msg{max-width:78%;display:flex;flex-direction:column;gap:3px}
+  .ai-msg.user{align-self:flex-end}.ai-msg.assistant{align-self:flex-start}
+  .ai-bubble{padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.6;word-break:break-word;white-space:pre-wrap}
+  .ai-msg.user .ai-bubble{background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--text);border-radius:12px 12px 2px 12px}
+  .ai-msg.assistant .ai-bubble{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:12px 12px 12px 2px}
+  .ai-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);text-align:center;padding:40px 20px}
+  .ai-empty .ai-icon{font-size:36px;opacity:.35;margin-bottom:4px}
+  .ai-empty .ai-hint{font-size:12px;max-width:280px;line-height:1.6}
+  .ai-input-row{padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end;background:var(--panel);flex-shrink:0}
+  .ai-textarea{flex:1;background:var(--panel2);border:1px solid var(--border2);border-radius:10px;padding:10px 12px;color:var(--text);font:inherit;font-size:13px;resize:none;min-height:40px;max-height:130px;outline:none;line-height:1.5;transition:border-color .12s}
+  .ai-textarea:focus{border-color:var(--accent-border)}
+  .ai-send{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 16px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:opacity .12s;flex-shrink:0;line-height:1}
+  .ai-send:hover{opacity:.85}.ai-send:disabled{opacity:.4;cursor:not-allowed}
+  .ai-model-row{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);flex-shrink:0}
+  .ai-model-sel{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;color:var(--text);font:inherit;font-size:11px;cursor:pointer}
+  .ai-typing{display:inline-flex;gap:4px;align-items:center;padding:10px 14px}
+  .ai-typing span{width:5px;height:5px;background:var(--muted);border-radius:50%;animation:aiBlink 1.2s infinite}
+  .ai-typing span:nth-child(2){animation-delay:.2s}.ai-typing span:nth-child(3){animation-delay:.4s}
+  @keyframes aiBlink{0%,80%,100%{opacity:.25}40%{opacity:1}}
 </style>
 </head>
 <body>
@@ -569,6 +590,10 @@ const PAGE = `<!doctype html>
     <div class="nav-item" data-tab="logs" onclick="nav(this)"><i class="icon">≡</i> Logs</div>
     <div class="nav-item" data-tab="deploys" onclick="nav(this)"><i class="icon">↑</i> Deploys</div>
     <div class="nav-item" data-tab="access" onclick="nav(this)"><i class="icon">◉</i> Access</div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-label">AI</div>
+    <div class="nav-item" data-tab="ai-assistant" onclick="nav(this)"><i class="icon">⬡</i> AI Assistant</div>
   </div>
 </nav>
 <div class="main">
@@ -824,6 +849,31 @@ const PAGE = `<!doctype html>
   </div>
 </div>
 
+<div id="tab-ai-assistant" style="display:none;height:100%;overflow:hidden">
+  <div class="ai-wrap">
+    <div class="ai-model-row">
+      <span>Model</span>
+      <select class="ai-model-sel" id="aiModelSel">
+        <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
+        <option value="anthropic/claude-haiku-4.5">Claude Haiku 4.5</option>
+        <option value="openai/gpt-4o-mini">GPT-4o mini</option>
+      </select>
+      <span style="margin-left:auto">Key: <span id="aiKeyStatus" style="color:var(--degraded)">no key</span></span>
+    </div>
+    <div class="ai-messages" id="aiMessages">
+      <div class="ai-empty" id="aiEmpty">
+        <div class="ai-icon">⬡</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px">AI Assistant</div>
+        <div class="ai-hint">Chat with any model via the gateway. Enter your key under Access → Set Gateway Key first.</div>
+      </div>
+    </div>
+    <div class="ai-input-row">
+      <textarea class="ai-textarea" id="aiInput" placeholder="Ask anything…" rows="1" onkeydown="aiKeydown(event)"></textarea>
+      <button class="ai-send" id="aiSend" onclick="aiSend()">Send ↑</button>
+    </div>
+  </div>
+</div>
+
 </div></div></div>
 
 <div class="scrim" id="scrim" onclick="closeDrawer()"></div>
@@ -873,8 +923,8 @@ function promptKey(){var k=prompt('Enter GATEWAY_KEY:');if(!k)return false;gk=k;
 var st={org:'',project:ALL,region:ALL,status:ALL,q:'',view:'comfortable',services:[],summary:{},lastLoad:0,logTab:'all',obsWindow:3600000};
 var allLogs=[];
 var logTimer=null;var logCountdownTimer=null;var logCountdownSec=30;
-var TAB_TITLES={overview:'OVERVIEW',services:'SERVICES',incidents:'INCIDENTS',observability:'OBSERVABILITY',logs:'LOGS',deploys:'DEPLOYS',access:'ACCESS'};
-function nav(el){if(!el)return;var tab=el.getAttribute('data-tab');if(!tab)return;document.querySelectorAll('.nav-item').forEach(function(n){n.classList.toggle('active',n===el)});document.querySelectorAll('[id^="tab-"]').forEach(function(t){t.style.display='none'});var panel=$('tab-'+tab);if(panel)panel.style.display='';var tb=$('topTitle');txt(tb,TAB_TITLES[tab]||tab.toUpperCase());var filterTabs=new Set(['overview','services']);var crumb=$('topBreadcrumb');if(crumb)crumb.style.display=filterTabs.has(tab)?'':'none';if(tb){tb.style.background=tab==='overview'?'rgba(63,185,80,.12)':tab==='incidents'?'rgba(233,69,96,.12)':tab==='observability'?'rgba(124,158,247,.12)':'rgba(110,118,129,.14)';tb.style.color=tab==='overview'?'var(--healthy)':tab==='incidents'?'var(--down)':tab==='observability'?'#7c9ef7':'var(--muted)';tb.style.borderColor=tab==='overview'?'rgba(63,185,80,.2)':tab==='incidents'?'rgba(233,69,96,.2)':tab==='observability'?'rgba(124,158,247,.2)':'rgba(110,118,129,.2)'}if(tab==='incidents')loadIncidents();if(tab==='observability'){loadObs();startObsCd();}else stopObsCd();if(tab==='logs'){startLogPoll();loadLogs();}else stopLogPoll();if(tab==='deploys')loadActivity();if(tab==='access'){loadAccess();startSessPoll();}else{stopSessPoll();}}
+var TAB_TITLES={overview:'OVERVIEW',services:'SERVICES',incidents:'INCIDENTS',observability:'OBSERVABILITY',logs:'LOGS',deploys:'DEPLOYS',access:'ACCESS','ai-assistant':'AI ASSISTANT'};
+function nav(el){if(!el)return;var tab=el.getAttribute('data-tab');if(!tab)return;document.querySelectorAll('.nav-item').forEach(function(n){n.classList.toggle('active',n===el)});document.querySelectorAll('[id^="tab-"]').forEach(function(t){t.style.display='none'});var panel=$('tab-'+tab);if(panel)panel.style.display='';var tb=$('topTitle');txt(tb,TAB_TITLES[tab]||tab.toUpperCase());var filterTabs=new Set(['overview','services']);var crumb=$('topBreadcrumb');if(crumb)crumb.style.display=filterTabs.has(tab)?'':'none';if(tb){tb.style.background=tab==='overview'?'rgba(63,185,80,.12)':tab==='incidents'?'rgba(233,69,96,.12)':tab==='observability'?'rgba(124,158,247,.12)':tab==='ai-assistant'?'rgba(139,92,246,.12)':'rgba(110,118,129,.14)';tb.style.color=tab==='overview'?'var(--healthy)':tab==='incidents'?'var(--down)':tab==='observability'?'#7c9ef7':tab==='ai-assistant'?'#8b5cf6':'var(--muted)';tb.style.borderColor=tab==='overview'?'rgba(63,185,80,.2)':tab==='incidents'?'rgba(233,69,96,.2)':tab==='observability'?'rgba(124,158,247,.2)':tab==='ai-assistant'?'rgba(139,92,246,.2)':'rgba(110,118,129,.2)'}if(tab==='incidents')loadIncidents();if(tab==='observability'){loadObs();startObsCd();}else stopObsCd();if(tab==='logs'){startLogPoll();loadLogs();}else stopLogPoll();if(tab==='deploys')loadActivity();if(tab==='access'){loadAccess();startSessPoll();}else{stopSessPoll();}if(tab==='ai-assistant')loadAiAssistant();}
 function qsInit(){var p=new URLSearchParams(location.search);if(p.get('org'))st.org=p.get('org');if(p.get('project'))st.project=p.get('project');if(p.get('region'))st.region=p.get('region')}
 function opt(val,label,sel){var o=document.createElement('option');o.value=val;o.textContent=label;if(val===sel)o.selected=true;return o}
 function fillSelects(d){var orgs=Array.isArray(d.orgs)?d.orgs:[];var projects=Array.isArray(d.projects)?d.projects:[];var regions=Array.isArray(d.regions)?d.regions:[];var f=d.filters||{};var os=$('orgSel');os.innerHTML='';os.appendChild(opt(ALL,'All Orgs',f.org||ALL));orgs.forEach(function(o){os.appendChild(opt(o,o,f.org))});var ps=$('projSel');ps.innerHTML='';ps.appendChild(opt(ALL,'All Projects',f.project));projects.forEach(function(p){ps.appendChild(opt(p,p,f.project))});var rs=$('regionSel');rs.innerHTML='';rs.appendChild(opt(ALL,'All Regions',f.region));regions.forEach(function(r){rs.appendChild(opt(r,r,f.region))});var orgLabel=(f.org&&f.org!==ALL)?f.org:'All Orgs';var projLabel=(f.project&&f.project!==ALL)?f.project:'All Projects';txt($('topBreadcrumb'),orgLabel+' / '+projLabel)}
@@ -1050,6 +1100,11 @@ $('exportBtn').onclick=function(){var p=new URLSearchParams();if(st.org)p.set('o
 $('refreshBtn').onclick=function(){load()};
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
 setInterval(function(){updateFresh();load()},30000);
+var aiMsgs=[];
+function loadAiAssistant(){var ks=$('aiKeyStatus');if(ks){ks.textContent=gk?'set':'no key';ks.style.color=gk?'var(--healthy)':'var(--degraded)';}}
+function aiKeydown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();aiSend();}}
+function aiAppend(role,content){aiMsgs.push({role:role,content:content});var el=$('aiMessages');var empty=$('aiEmpty');if(empty)empty.style.display='none';var div=document.createElement('div');div.className='ai-msg '+role;var bubble=document.createElement('div');bubble.className='ai-bubble';bubble.textContent=content;div.appendChild(bubble);el.appendChild(div);el.scrollTop=el.scrollHeight;}
+function aiSend(){if(!gk){promptKey();return;}var inp=$('aiInput');var text=(inp.value||'').trim();if(!text)return;inp.value='';inp.style.height='';aiAppend('user',text);var btn=$('aiSend');btn.disabled=true;var modelSel=$('aiModelSel');var model=modelSel?modelSel.value:'anthropic/claude-haiku-4.5';var msgEl=$('aiMessages');var typingDiv=document.createElement('div');typingDiv.className='ai-msg assistant';typingDiv.id='aiTyping';var typingBubble=document.createElement('div');typingBubble.className='ai-typing';typingBubble.innerHTML='<span></span><span></span><span></span>';typingDiv.appendChild(typingBubble);msgEl.appendChild(typingDiv);msgEl.scrollTop=msgEl.scrollHeight;fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+gk},body:JSON.stringify({model:model,messages:aiMsgs,max_tokens:1024})}).then(function(r){return r.json();}).then(function(d){var typing=document.getElementById('aiTyping');if(typing)typing.remove();btn.disabled=false;if(d.error){aiAppend('assistant','Error: '+(d.error.message||JSON.stringify(d.error)));return;}var reply=(d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content)||'(empty response)';aiAppend('assistant',reply);}).catch(function(e){var typing=document.getElementById('aiTyping');if(typing)typing.remove();btn.disabled=false;aiAppend('assistant','Network error: '+e.message);});}
 qsInit();load();
 })();
 </script>
