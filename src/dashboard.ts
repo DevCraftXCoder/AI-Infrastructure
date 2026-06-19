@@ -11,6 +11,16 @@ import extra from "./dashboard-extra.js";
 const ALL = "__all__";
 const dash = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+/** Escape user-controlled strings before inserting into innerHTML. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function readFilter(c: { req: { query: (k: string) => string | undefined } }): Filter {
   return {
     org: c.req.query("org") || undefined,
@@ -232,6 +242,7 @@ dash.post("/api/control/services", verifyAuth, async (c) => {
   let body: { org?: string; project?: string; region?: string; name?: string; kind?: string; url?: string | null; version?: string | null; status?: string };
   try { body = await c.req.json(); } catch { return c.json({ error: "invalid_json" }, 400); }
   if (!body.org || !body.project || !body.name) return c.json({ error: "org_project_name_required" }, 400);
+  if (!/^[A-Za-z0-9 ._-]{1,64}$/.test(body.name)) return c.json({ error: "invalid_service_name", message: "Service name must be 1–64 chars, letters/digits/spaces/._- only." }, 400);
   const allowed = new Set(["healthy", "degraded", "down", "unknown"]);
   try {
     const svc = await upsertService(c.env, {
@@ -1020,8 +1031,8 @@ function loadObs(){
         pillBox.style.display='';
         pillBox.innerHTML='<div class="svc-pill active" onclick="filterObsSvc(this)"><span class="pd" style="background:var(--accent)"></span>All</div>';
         var seen={};
-        svcs.forEach(function(sv){if(seen[sv.name])return;seen[sv.name]=1;var err=sv.error_rate||0;var dot=err>5?'var(--down)':err>1?'var(--degraded)':'var(--healthy)';pillBox.innerHTML+='<div class="svc-pill" onclick="filterObsSvc(this)"><span class="pd" style="background:'+dot+'"></span>'+sv.name+'</div>';});
-        st.services.forEach(function(sv){if(seen[sv.name])return;seen[sv.name]=1;var dot=sv.status==='healthy'?'var(--healthy)':sv.status==='degraded'?'var(--degraded)':'var(--down)';pillBox.innerHTML+='<div class="svc-pill" onclick="filterObsSvc(this)"><span class="pd" style="background:'+dot+'"></span>'+sv.name+'</div>';});
+        svcs.forEach(function(sv){if(seen[sv.name])return;seen[sv.name]=1;var err=sv.error_rate||0;var dot=err>5?'var(--down)':err>1?'var(--degraded)':'var(--healthy)';pillBox.innerHTML+='<div class="svc-pill" onclick="filterObsSvc(this)"><span class="pd" style="background:'+dot+'"></span>'+escapeHtml(sv.name)+'</div>';});
+        st.services.forEach(function(sv){if(seen[sv.name])return;seen[sv.name]=1;var dot=sv.status==='healthy'?'var(--healthy)':sv.status==='degraded'?'var(--degraded)':'var(--down)';pillBox.innerHTML+='<div class="svc-pill" onclick="filterObsSvc(this)"><span class="pd" style="background:'+dot+'"></span>'+escapeHtml(sv.name)+'</div>';});
       } else pillBox.style.display='none';
     }
     // #4 metric cards with sparklines + trend arrows
@@ -1035,20 +1046,20 @@ function loadObs(){
     mDefs.forEach(function(c){var tCls=c.trend.dir==='up'?'up':c.trend.dir==='down-good'?'down-good':'flat';var tIco=c.trend.dir==='up'?'↑':c.trend.dir==='down-good'?'↓':'→';var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div>'+makeSpark(c.val,c.max,c.color)+'<div class="metric-trend '+tCls+'"><span>'+tIco+'</span><span>'+c.trend.txt+'</span></div>';mc.appendChild(el)});
     // key metrics per service
     var km=$('obsKeyMetrics');km.innerHTML='';
-    svcs.slice(0,3).forEach(function(sv){var el=document.createElement('div');el.className='metric-card';var lat=sv.p99_latency_ms||0;var lc=lat>300?'var(--down)':lat>150?'var(--degraded)':'var(--accent)';el.innerHTML='<div class="mv" style="color:'+lc+'">'+lat+'ms</div><div class="mk">P99 LATENCY</div>'+makeSpark(lat,500,lc)+'<div class="ms" style="margin-top:2px;color:var(--muted)">'+sv.name+'</div>';km.appendChild(el)});
-    [{mv:errRate+'%',mk:'ERROR RATE',ms:svcs[0]?svcs[0].name:'—',val:errRate,max:10,color:'var(--healthy)'},{mv:totalChecks||0,mk:'THROUGHPUT',ms:'req last window',val:totalChecks,max:Math.max(totalChecks,5000),color:'var(--accent)'},{mv:st.infraCost,mk:'AI TOKEN COST',ms:'last window',val:0,max:1,color:'var(--muted)'}].forEach(function(c){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div>'+makeSpark(c.val,c.max,c.color)+'<div class="ms" style="margin-top:2px;color:var(--muted)">'+c.ms+'</div>';km.appendChild(el)});
+    svcs.slice(0,3).forEach(function(sv){var el=document.createElement('div');el.className='metric-card';var lat=sv.p99_latency_ms||0;var lc=lat>300?'var(--down)':lat>150?'var(--degraded)':'var(--accent)';el.innerHTML='<div class="mv" style="color:'+lc+'">'+lat+'ms</div><div class="mk">P99 LATENCY</div>'+makeSpark(lat,500,lc)+'<div class="ms" style="margin-top:2px;color:var(--muted)">'+escapeHtml(sv.name)+'</div>';km.appendChild(el)});
+    [{mv:errRate+'%',mk:'ERROR RATE',ms:svcs[0]?escapeHtml(svcs[0].name):'—',val:errRate,max:10,color:'var(--healthy)'},{mv:totalChecks||0,mk:'THROUGHPUT',ms:'req last window',val:totalChecks,max:Math.max(totalChecks,5000),color:'var(--accent)'},{mv:st.infraCost,mk:'AI TOKEN COST',ms:'last window',val:0,max:1,color:'var(--muted)'}].forEach(function(c){var el=document.createElement('div');el.className='metric-card';el.innerHTML='<div class="mv">'+c.mv+'</div><div class="mk">'+c.mk+'</div>'+makeSpark(c.val,c.max,c.color)+'<div class="ms" style="margin-top:2px;color:var(--muted)">'+c.ms+'</div>';km.appendChild(el)});
     // #9 per-service tables with comparison bars (replaces plain bar chart)
     var lt=$('latencyTable');lt.innerHTML='';
     if(svcs.length){
       var maxLat=Math.max.apply(null,svcs.map(function(sv){return sv.p99_latency_ms||0}).concat([1]));
       var maxErr2=Math.max.apply(null,svcs.map(function(sv){return sv.error_rate||0}).concat([0.1]));
       var tbl='<table style="width:100%;border-collapse:collapse"><thead><tr style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)"><th style="text-align:left;padding:6px 8px">Service</th><th style="text-align:right;padding:6px 8px;width:72px">P99</th><th style="padding:6px 8px">Comparison</th><th style="text-align:right;padding:6px 8px;width:64px">Err %</th></tr></thead><tbody>';
-      svcs.forEach(function(sv){var lat=sv.p99_latency_ms||0;var pct=Math.round(lat/maxLat*100);var bc=lat>300?'var(--down)':lat>150?'var(--degraded)':'var(--accent)';var ec=sv.error_rate>5?'var(--down)':sv.error_rate>1?'var(--degraded)':'var(--healthy)';tbl+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px;font-size:13px">'+sv.name+'</td><td style="text-align:right;padding:8px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;color:'+bc+'">'+lat+'ms</td><td style="padding:8px 8px 8px 4px"><div class="inline-bar-wrap"><div class="inline-bar-bg"><div class="inline-bar-fill" style="width:'+pct+'%;background:'+bc+'"></div></div></div></td><td style="text-align:right;padding:8px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;color:'+ec+'">'+sv.error_rate+'%</td></tr>';});
+      svcs.forEach(function(sv){var lat=sv.p99_latency_ms||0;var pct=Math.round(lat/maxLat*100);var bc=lat>300?'var(--down)':lat>150?'var(--degraded)':'var(--accent)';var ec=sv.error_rate>5?'var(--down)':sv.error_rate>1?'var(--degraded)':'var(--healthy)';tbl+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px;font-size:13px">'+escapeHtml(sv.name)+'</td><td style="text-align:right;padding:8px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;color:'+bc+'">'+lat+'ms</td><td style="padding:8px 8px 8px 4px"><div class="inline-bar-wrap"><div class="inline-bar-bg"><div class="inline-bar-fill" style="width:'+pct+'%;background:'+bc+'"></div></div></div></td><td style="text-align:right;padding:8px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;color:'+ec+'">'+sv.error_rate+'%</td></tr>';});
       tbl+='</tbody></table>';
       // error rate sub-table
       tbl+='<div class="section-header" style="margin-top:14px"><span class="section-title">Error Rate Per Service (%)</span></div>';
       tbl+='<table style="width:100%;border-collapse:collapse"><thead><tr style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)"><th style="text-align:left;padding:6px 8px">Service</th><th style="text-align:right;padding:6px 8px;width:72px">Err %</th><th style="padding:6px 8px">Comparison</th></tr></thead><tbody>';
-      svcs.forEach(function(sv){var er=sv.error_rate||0;var p2=Math.round(er/maxErr2*100);var ec2=er>5?'var(--down)':er>1?'var(--degraded)':'var(--healthy)';tbl+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px;font-size:13px">'+sv.name+'</td><td style="text-align:right;padding:8px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;color:'+ec2+'">'+er+'%</td><td style="padding:8px 8px 8px 4px"><div class="inline-bar-wrap"><div class="inline-bar-bg"><div class="inline-bar-fill" style="width:'+p2+'%;background:'+ec2+'"></div></div></div></td></tr>';});
+      svcs.forEach(function(sv){var er=sv.error_rate||0;var p2=Math.round(er/maxErr2*100);var ec2=er>5?'var(--down)':er>1?'var(--degraded)':'var(--healthy)';tbl+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px;font-size:13px">'+escapeHtml(sv.name)+'</td><td style="text-align:right;padding:8px;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:600;color:'+ec2+'">'+er+'%</td><td style="padding:8px 8px 8px 4px"><div class="inline-bar-wrap"><div class="inline-bar-bg"><div class="inline-bar-fill" style="width:'+p2+'%;background:'+ec2+'"></div></div></div></td></tr>';});
       tbl+='</tbody></table>';
       lt.innerHTML=tbl;
     } else lt.innerHTML='<div class="empty" style="padding:30px 20px">No services probed in this window.<div class="hint">Widen the time range or trigger a health check.</div></div>';
