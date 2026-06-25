@@ -7,14 +7,18 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "test": "vitest run"
   },
   "dependencies": {
     "hono": "^4.12.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
     "@cloudflare/workers-types": "^4.0.0",
     "typescript": "^5.0.0",
+    "vitest": "^2.0.0",
     "wrangler": "^3.0.0"
   }
 }

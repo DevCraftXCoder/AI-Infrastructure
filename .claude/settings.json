@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wrangler:*)",
+      "Bash(npm:*)",
+      "Bash(pnpm:*)",
+      "Bash(git:*)"
+    ],
+    "deny": []
+  }
+}
