@@ -1,0 +1,95 @@
+{
+  "project": "AI Infrastructure",
+  "version": "1.0.0",
+  "output": "docs/roadmap.html",
+  "sections": [
+    {
+      "id": "setup",
+      "title": "Project Setup",
+      "weight": 1.0,
+      "items": [
+        { "id": "claude-md",  "title": "CLAUDE.md configured",  "weight": 1.0, "check": { "type": "file", "path": ".claude/CLAUDE.md" } },
+        { "id": "settings",   "title": "Claude settings.json",  "weight": 0.5, "check": { "type": "file", "path": ".claude/settings.json" } },
+        { "id": "gitignore",  "title": ".gitignore present",    "weight": 0.5, "check": { "type": "file", "path": ".gitignore" } },
+        { "id": "readme",     "title": "README.md present",     "weight": 1.0, "check": { "type": "file", "path": "README.md" } },
+        { "id": "security",   "title": "SECURITY.md present",   "weight": 1.0, "check": { "type": "file", "path": "SECURITY.md" } }
+      ]
+    },
+    {
+      "id": "code",
+      "title": "Code Quality",
+      "weight": 1.0,
+      "items": [
+        { "id": "tsconfig",         "title": "TypeScript configured",   "weight": 1.0, "check": { "type": "file", "path": "tsconfig.json" } },
+        { "id": "typecheck-script", "title": "Typecheck npm script",    "weight": 1.0, "check": { "type": "grep", "pattern": "\"typecheck\"", "file": "package.json" } },
+        { "id": "lint",             "title": "Linter configured",       "weight": 0.5, "check": { "type": "grep", "pattern": "eslint|biome|oxlint", "file": "package.json" } },
+        { "id": "tests",            "title": "Test suite configured",   "weight": 1.5, "check": { "type": "grep", "pattern": "vitest|jest", "file": "package.json" } }
+      ]
+    },
+    {
+      "id": "gateway",
+      "title": "Gateway Core",
+      "weight": 1.5,
+      "items": [
+        { "id": "health-live",      "title": "Health endpoint live (200)",         "weight": 2.0, "check": { "type": "http", "url": "https://ai-gateway.frxncois.workers.dev/health", "expect": 200 } },
+        { "id": "auth-layer",       "title": "Auth middleware (verifyAuth)",       "weight": 1.5, "check": { "type": "file", "path": "src/auth.ts" } },
+        { "id": "safety-layer",     "title": "Safety layer (blocklist + async)",   "weight": 1.5, "check": { "type": "file", "path": "src/safety.ts" } },
+        { "id": "provider-fallback","title": "Provider fallback cascade",          "weight": 1.5, "check": { "type": "file", "path": "src/providers.ts" } },
+        { "id": "prompt-cache",     "title": "Prompt-cache breakpoints wired",     "weight": 1.0, "check": { "type": "grep", "pattern": "cache_control", "file": "src/index.ts" } },
+        { "id": "request-id",       "title": "Per-request UUID tracking",          "weight": 1.0, "check": { "type": "grep", "pattern": "randomUUID|requestId", "file": "src/index.ts" } }
+      ]
+    },
+    {
+      "id": "control-plane",
+      "title": "Control Plane",
+      "weight": 1.2,
+      "items": [
+        { "id": "service-registry",   "title": "Service registry module",           "weight": 1.5, "check": { "type": "file", "path": "src/registry.ts" } },
+        { "id": "dashboard-routes",   "title": "Dashboard & API routes",            "weight": 1.0, "check": { "type": "file", "path": "src/dashboard.ts" } },
+        { "id": "cron-health-sweeps", "title": "5-min health sweep cron",           "weight": 1.5, "check": { "type": "grep", "pattern": "\\*/5 \\* \\* \\* \\*", "file": "wrangler.toml" } },
+        { "id": "incident-schema",    "title": "Incident schema (migration 005)",   "weight": 1.0, "check": { "type": "file", "path": "migrations/005-incidents-tokens.sql" } },
+        { "id": "session-support",    "title": "Session management (migration 007)","weight": 1.0, "check": { "type": "file", "path": "migrations/007-sessions.sql" } }
+      ]
+    },
+    {
+      "id": "database",
+      "title": "Database",
+      "weight": 1.0,
+      "items": [
+        { "id": "d1-binding",        "title": "D1 binding in wrangler.toml",     "weight": 1.0, "check": { "type": "grep", "pattern": "d1_databases", "file": "wrangler.toml" } },
+        { "id": "cost-ledger",       "title": "Cost ledger schema (migration 001)","weight": 1.0, "check": { "type": "file", "path": "migrations/001-cost-ledger.sql" } },
+        { "id": "safety-log",        "title": "Safety log schema (migration 002)","weight": 1.0, "check": { "type": "file", "path": "migrations/002-safety-log.sql" } },
+        { "id": "service-reg-schema","title": "Service registry schema (003)",    "weight": 1.0, "check": { "type": "file", "path": "migrations/003-service-registry.sql" } },
+        { "id": "ttl-cron",          "title": "TTL cleanup cron (3 AM UTC)",      "weight": 1.0, "check": { "type": "grep", "pattern": "0 3 \\* \\* \\*", "file": "wrangler.toml" } },
+        { "id": "migrations-applied","title": "Migrations applied to remote D1",  "weight": 2.0, "check": { "type": "manual", "lastValue": true,  "lastChecked": "2026-06-25" } }
+      ]
+    },
+    {
+      "id": "deploy",
+      "title": "Deploy & Ops",
+      "weight": 1.0,
+      "items": [
+        { "id": "deploy-script",  "title": "Deploy npm script defined",        "weight": 1.0, "check": { "type": "grep", "pattern": "\"deploy\"", "file": "package.json" } },
+        { "id": "rate-limiting",  "title": "CF Rate Limiter binding wired",     "weight": 1.5, "check": { "type": "grep", "pattern": "GATEWAY_RATE_LIMITER", "file": "wrangler.toml" } },
+        { "id": "live-deploy",    "title": "Live deployment verified",          "weight": 2.0, "check": { "type": "manual", "lastValue": true,  "lastChecked": "2026-06-25" } },
+        { "id": "env-example",    "title": ".env.example / .dev.vars.example",  "weight": 0.5, "check": { "type": "file", "path": ".env.example" } },
+        { "id": "changelog",      "title": "CHANGELOG.md present",              "weight": 0.5, "check": { "type": "file", "path": "CHANGELOG.md" } }
+      ]
+    },
+    {
+      "id": "infratab",
+      "title": "InfraTab Integration",
+      "weight": 0.8,
+      "items": [
+        { "id": "infra-shell",           "title": "InfraShell.tsx component",        "weight": 1.0, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/InfraShell.tsx" } },
+        { "id": "service-registry-panel","title": "ServiceRegistryPanel.tsx",        "weight": 1.5, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/ServiceRegistryPanel.tsx" } },
+        { "id": "observability-view",    "title": "ObservabilityView.tsx",           "weight": 1.0, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/ObservabilityView.tsx" } },
+        { "id": "logs-panel",            "title": "LogsPanel.tsx",                   "weight": 1.0, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/LogsPanel.tsx" } },
+        { "id": "incident-view",         "title": "IncidentView.tsx + IncidentCard", "weight": 1.0, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/IncidentView.tsx" } },
+        { "id": "rollback-panel",        "title": "RollbackPanel.tsx",               "weight": 1.0, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/RollbackPanel.tsx" } },
+        { "id": "slo-panel",             "title": "SloPanel.tsx",                    "weight": 1.0, "check": { "type": "file", "path": "../francois-landing/components/admin/infra/SloPanel.tsx" } },
+        { "id": "infra-logo-api",        "title": "infra-tab-logo API route wired",  "weight": 0.5, "check": { "type": "grep", "pattern": "infra-tab-logo", "file": "../francois-landing/app/api/admin/infra-tab-logo/route.ts" } }
+      ]
+    }
+  ]
+}
