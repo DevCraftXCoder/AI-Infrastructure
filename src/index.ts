@@ -9,7 +9,11 @@ import { runHealthChecks } from "./registry.js";
 
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-app.use("*", cors({ origin: "*", allowHeaders: ["Authorization", "Content-Type", "X-Feature"], allowMethods: ["POST", "GET", "DELETE", "OPTIONS"] }));
+app.use("*", cors({
+  origin: ["https://frxncois.com", "https://ai-gateway.frxncois.workers.dev"],
+  allowHeaders: ["Authorization", "Content-Type", "X-Feature"],
+  allowMethods: ["POST", "GET", "DELETE", "OPTIONS"],
+}));
 
 app.get("/health", (c) => c.json({ status: "ok", service: "ai-gateway" }));
 
