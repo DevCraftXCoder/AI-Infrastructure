@@ -235,6 +235,16 @@ export async function ingestEvent(env: Env, input: { org: string; project?: stri
       .bind(input.org, input.project, input.service).first<{ id: string }>();
     if (r) { serviceId = r.id; }
   }
+  // Auto-update service version on deploy events that include a version in detail JSON.
+  if (input.kind === "deploy" && serviceId && input.detail) {
+    try {
+      const det = JSON.parse(input.detail) as { version?: string };
+      if (det.version) {
+        await env.DB.prepare("UPDATE services SET version = ?, updated_at = ? WHERE id = ?")
+          .bind(det.version, Date.now(), serviceId).run();
+      }
+    } catch { /* ignore malformed detail */ }
+  }
   await logActivity(env, { org: input.org, project: input.project ?? null, service_id: serviceId, kind: input.kind, message: input.message, detail: input.detail ?? null });
 }
 

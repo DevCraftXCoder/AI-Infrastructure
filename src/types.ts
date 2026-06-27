@@ -25,11 +25,26 @@ export interface Service {
   region: string;
   name: string;
   kind: string;
+  environment: string;      // production | staging | sandbox | dev
   url: string | null;
   status: ServiceStatus;
   latency_ms: number | null;
   version: string | null;
   last_check: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface Project {
+  id: string;
+  org: string;
+  name: string;
+  environment: string;      // production | staging | sandbox | dev
+  type: string;             // service | tool | api | game | platform
+  owner: string | null;
+  repo: string | null;
+  deploy_target: string | null;
+  description: string | null;
   created_at: number;
   updated_at: number;
 }
