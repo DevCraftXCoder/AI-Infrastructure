@@ -127,7 +127,9 @@ dash.get("/api/control/orgs", async (c) => {
   catch { return c.json({ error: "internal_error" }, 500); }
 });
 
-dash.get("/api/control/projects", async (c) => {
+// Renamed from /api/control/projects to avoid shadowing the authenticated CRUD route in dashboard-extra.ts.
+// This returns DISTINCT project names from the services table (for dropdown population — no auth required).
+dash.get("/api/control/project-names", async (c) => {
   try {
     const org = c.req.query("org") || "";
     return c.json({ projects: org ? await listProjects(c.env, org) : [] });
@@ -195,7 +197,7 @@ dash.get("/api/control/docs", (c) => c.json({
   endpoints: [
     { method: "GET", path: "/api/control/overview", auth: false, query: "org, project, region, status, q", desc: "Filters + dropdown options + filtered services + health summary (one shot)." },
     { method: "GET", path: "/api/control/orgs", auth: false, desc: "Distinct organizations." },
-    { method: "GET", path: "/api/control/projects?org=", auth: false, desc: "Projects within an org." },
+    { method: "GET", path: "/api/control/project-names?org=", auth: false, desc: "Distinct project names within an org (from services table — for dropdowns)." },
     { method: "GET", path: "/api/control/regions?org=&project=", auth: false, desc: "Regions within an org/project." },
     { method: "GET", path: "/api/control/activity?org=&project=&limit=", auth: false, desc: "Recent activity / What Changed feed." },
     { method: "GET", path: "/api/control/services/:id", auth: false, desc: "Service detail + recent health-check history." },
@@ -220,6 +222,10 @@ dash.get("/api/control/docs", (c) => c.json({
     { method: "GET", path: "/api/control/tokens", auth: true, query: "org", desc: "List service tokens — hashes never returned." },
     { method: "POST", path: "/api/control/tokens", auth: true, body: "{org, name, scope?, expires_in_days?}", desc: "Create service token — raw token returned once only." },
     { method: "DELETE", path: "/api/control/tokens/:id", auth: true, desc: "Revoke service token." },
+    { method: "POST", path: "/api/control/heartbeat", auth: true, body: "{org, service, status?, latency_ms?, version?, detail?}", desc: "Push-in heartbeat for PM2/Docker/local services that can't be reached by the health cron." },
+    { method: "GET", path: "/api/control/projects", auth: true, query: "org", desc: "List projects metadata table rows." },
+    { method: "POST", path: "/api/control/projects", auth: true, body: "{org, name, environment?, type?, owner?, repo?, deploy_target?, description?}", desc: "Create project." },
+    { method: "PATCH", path: "/api/control/projects/:id", auth: true, body: "{name?, environment?, type?, owner?, repo?, deploy_target?, description?}", desc: "Update project." },
   ],
 }));
 
